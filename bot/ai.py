@@ -54,7 +54,7 @@ async def _ask_model(client: httpx.AsyncClient, model: str, report_text: str) ->
             "maxOutputTokens": 1024,
             "responseMimeType": "application/json",
         }
-        
+
         # Оставляем старые параметры только для моделей ниже версии 3.5
         if "gemini-3.5" not in model:
             generation_config["temperature"] = 0.4
@@ -81,7 +81,7 @@ async def _ask_model(client: httpx.AsyncClient, model: str, report_text: str) ->
             request=exc.request,
             response=exc.response,
         ) from exc
-        
+
     return resp.json()
 
 
