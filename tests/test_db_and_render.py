@@ -27,6 +27,40 @@ async def test_mark_payment_refunded_once(user):
     assert (await db.get_payment("chg_2"))["refunded"] == 1
 
 
+# ---------- анти-инъекция отчётов: дедуп по fingerprint (AUDIT 2.4) ----------
+
+async def test_add_report_rejects_duplicate_text(user):
+    assert await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок") is True
+    assert await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок") is False, (
+        "повторный отчёт с тем же текстом не должен пройти как новый"
+    )
+    assert await db.count_where("reports", "user_id = ?", (1,)) == 1
+
+
+async def test_add_report_duplicate_ignores_case_and_whitespace(user):
+    assert await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок") is True
+    assert await db.add_report(
+        1, game.today_str(), "  отжался   50\nРАЗ  ", 40, "ок"
+    ) is False, "отличия только в пробелах/регистре — тот же отчёт"
+
+
+async def test_add_report_same_text_different_users_does_not_conflict(user, conn):
+    await db.create_user(2, "tester2", "Тестер2")
+
+    assert await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок") is True
+    assert await db.add_report(2, game.today_str(), "Отжался 50 раз", 40, "ок") is True, (
+        "одинаковый текст у разных охотников не должен конфликтовать"
+    )
+    assert await db.count_where("reports", "1=1") == 2
+
+
+async def test_report_is_duplicate_pre_check(user):
+    assert await db.report_is_duplicate(1, "Отжался 50 раз") is False
+    await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок")
+    assert await db.report_is_duplicate(1, "отжался 50 РАЗ") is True
+    assert await db.report_is_duplicate(1, "Пробежал 5 км") is False
+
+
 # ---------- право на забвение ----------
 
 async def test_delete_user_data_wipes_user_but_anonymizes_payment(user, conn):

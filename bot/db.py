@@ -3,7 +3,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from bot import config
+from bot import ai, config
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS reports (
     text        TEXT NOT NULL,
     xp_awarded  INTEGER DEFAULT 0,
     verdict     TEXT DEFAULT '',
+    -- SHA-256 нормализованного текста (bot.ai.fingerprint_report), AUDIT 2.4.
+    -- NULL для строк, записанных до этой миграции — уникальный индекс ниже
+    -- трактует несколько NULL как различные значения (не конфликтуют между
+    -- собой), так что старые данные не ломают дедуп новых отчётов.
+    fingerprint TEXT,
     created_at  TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_reports_user_date ON reports(user_id, report_date);
@@ -138,6 +143,12 @@ _BOSS_MIGRATIONS = {
     "low_hp_notified": "INTEGER DEFAULT 0",  # разослано ли «босс при смерти»
 }
 
+# Мягкая миграция для reports: на старой БД колонки ещё нет, ALTER TABLE
+# без DEFAULT даёт NULL для существующих строк (см. коммент к _SCHEMA).
+_REPORTS_MIGRATIONS = {
+    "fingerprint": "TEXT",
+}
+
 _db: aiosqlite.Connection | None = None
 
 
@@ -151,7 +162,11 @@ async def init_db() -> aiosqlite.Connection:
     await _db.execute("PRAGMA busy_timeout=5000")
     await _db.executescript(_SCHEMA)
     # Мягкая миграция: добавляем недостающие колонки
-    for table, migrations in (("users", _USER_MIGRATIONS), ("bosses", _BOSS_MIGRATIONS)):
+    for table, migrations in (
+        ("users", _USER_MIGRATIONS),
+        ("bosses", _BOSS_MIGRATIONS),
+        ("reports", _REPORTS_MIGRATIONS),
+    ):
         cur = await _db.execute(f"PRAGMA table_info({table})")
         existing = {row["name"] for row in await cur.fetchall()}
         for col, decl in migrations.items():
@@ -161,6 +176,14 @@ async def init_db() -> aiosqlite.Connection:
     # они бы падали, потому что на старой БД колонки ещё не существует.
     # По tz группируются все фоновые джобы (rollover, напоминания, дедлайн).
     await _db.execute("CREATE INDEX IF NOT EXISTS idx_users_tz ON users(tz)")
+    # Дедуп повторных отчётов (AUDIT 2.4): один и тот же нормализованный
+    # текст от одного охотника засчитывается только раз. NULL (старые строки
+    # без fingerprint) уникальностью не связаны — SQLite не считает
+    # несколько NULL конфликтующими значениями.
+    await _db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_user_fingerprint "
+        "ON reports(user_id, fingerprint)"
+    )
     await _db.commit()
     return _db
 
@@ -539,13 +562,41 @@ async def reports_count_today(user_id: int, date: str) -> int:
     return row["c"]
 
 
-async def add_report(user_id: int, date: str, text: str, xp: int, verdict: str) -> None:
-    await db().execute(
-        "INSERT INTO reports (user_id, report_date, text, xp_awarded, verdict) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (user_id, date, text, xp, verdict),
+async def report_is_duplicate(user_id: int, text: str) -> bool:
+    """Уже был у этого охотника отчёт с таким же (нормализованным) текстом?
+
+    Дешёвый pre-check ДО вызова Gemini — чтобы не тратить запрос к ИИ на
+    заведомую копипасту. Не единственная защита: add_report всё равно
+    гарантирует уникальность на уровне БД (гонка двух одинаковых отчётов
+    подряд).
+    """
+    fingerprint = ai.fingerprint_report(text)
+    cur = await db().execute(
+        "SELECT 1 FROM reports WHERE user_id = ? AND fingerprint = ? LIMIT 1",
+        (user_id, fingerprint),
+    )
+    return await cur.fetchone() is not None
+
+
+async def add_report(user_id: int, date: str, text: str, xp: int, verdict: str) -> bool:
+    """Записать отчёт. Возвращает True, если это новый отчёт (не дубль).
+
+    Дедуп по (user_id, fingerprint) — идентичный (без учёта регистра и
+    пробелов) текст от одного охотника засчитывается только один раз
+    (AUDIT 2.4). Тот же идиом, что record_payment для charge_id (AUDIT 1.2):
+    INSERT OR IGNORE + rowcount, без отдельной проверки-и-записи под гонку.
+    Вызывающая сторона обязана НЕ начислять XP/статы/total_reports, если
+    вернулось False.
+    """
+    fingerprint = ai.fingerprint_report(text)
+    cur = await db().execute(
+        "INSERT OR IGNORE INTO reports "
+        "(user_id, report_date, text, xp_awarded, verdict, fingerprint) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (user_id, date, text, xp, verdict, fingerprint),
     )
     await db().commit()
+    return cur.rowcount > 0
 
 
 # ---------- boss (босс недели) ----------

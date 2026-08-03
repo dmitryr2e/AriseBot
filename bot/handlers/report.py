@@ -1,4 +1,6 @@
 """Хендлер: /report — ИИ-оценка отчёта о проделанной работе (Gemini)."""
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -9,6 +11,7 @@ from bot import ai, config, db, game, keyboards, texts
 from bot.handlers.helpers import load_user, notify_xp_events, process_day_events
 
 router = Router()
+log = logging.getLogger(__name__)
 
 
 class ReportFlow(StatesGroup):
@@ -93,9 +96,29 @@ async def report_received(message: Message, state: FSMContext) -> None:
         await _answer_limit(message, user, limit)
         return
 
+    # Эвристика на prompt-injection (AUDIT 2.4) — только сигнал в лог, не
+    # блокировка: сам текст отчёта в лог не попадает, только user_id, имя
+    # сработавшего маркера и необратимый fingerprint для сопоставления.
+    injection_marker = ai.detect_suspicious_report(text)
+    if injection_marker is not None:
+        log.warning(
+            "suspicious report: user_id=%s marker=%s fingerprint=%s",
+            message.from_user.id,
+            injection_marker,
+            ai.fingerprint_report(text),
+        )
+
     # Сбрасываем состояние ДО медленного вызова ИИ:
     # иначе два быстрых сообщения обходят дневной лимит отчётов
     await state.clear()
+
+    # Дедуп (AUDIT 2.4): та же (без учёта регистра/пробелов) копия отчёта не
+    # должна повторно уходить в Gemini и тем более приносить награду.
+    # Дешёвый pre-check здесь + гарантия на уровне БД в add_report ниже —
+    # на случай гонки двух одинаковых отчётов подряд.
+    if await db.report_is_duplicate(message.from_user.id, text):
+        await message.answer(texts.REPORT_DUPLICATE)
+        return
 
     await message.answer(texts.REPORT_ANALYZING)
     try:
@@ -105,7 +128,15 @@ async def report_received(message: Message, state: FSMContext) -> None:
         await message.answer(texts.REPORT_AI_DOWN)
         return
 
-    await db.add_report(message.from_user.id, game.today_str(user), text, xp, verdict)
+    is_new_report = await db.add_report(
+        message.from_user.id, game.today_str(user), text, xp, verdict
+    )
+    if not is_new_report:
+        # Гонка: тот же fingerprint успел записаться, пока ждали ответ ИИ.
+        # Награду не начисляем — как и в обычном дедуп-случае выше.
+        await message.answer(texts.REPORT_DUPLICATE)
+        return
+
     await db.increment_user(message.from_user.id, total_reports=1)
 
     if xp <= 0:

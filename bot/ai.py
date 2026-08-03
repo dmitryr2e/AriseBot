@@ -1,4 +1,5 @@
 """ИИ-оценка отчётов о проделанной работе через Gemini API (напрямую)."""
+import hashlib
 import json
 import logging
 import re
@@ -122,6 +123,69 @@ async def evaluate_report(report_text: str) -> tuple[int, list[str], str]:
                 continue
 
     raise AiUnavailable(str(last_error)) from last_error
+
+
+# ---------- анти-инъекция отчётов (AUDIT 2.4) ----------
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_report_text(text: str) -> str:
+    """Нормализация текста отчёта для сравнения дублей.
+
+    Регистр и количество/тип пробельных символов (пробелы, табы, переносы
+    строк) не считаются отличием — "Отжался 50 раз" и "отжался   50\nраз"
+    должны схлопнуться в один и тот же fingerprint.
+    """
+    return _WHITESPACE_RE.sub(" ", text.strip().lower())
+
+
+def fingerprint_report(text: str) -> str:
+    """SHA-256 нормализованного текста отчёта — ключ дедупа.
+
+    Используется как дедуп-ключ (user_id, fingerprint) в БД и в логах
+    подозрительных отчётов вместо самого текста: хэш необратим, поэтому не
+    раскрывает содержимое отчёта, но позволяет сопоставить повторы.
+    """
+    return hashlib.sha256(normalize_report_text(text).encode("utf-8")).hexdigest()
+
+
+# Маркеры возможной prompt-injection в отчётах. Это сигнал для ручного
+# разбора в логах (см. handlers/report.py), а НЕ блокировка: список
+# умышленно узкий и заточен под явные попытки взлома промпта/накрутки XP,
+# чтобы не помечать обычные отчёты про работу, учёбу и спорт.
+_INJECTION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("ignore_instructions_en", re.compile(
+        r"ignore\s+(all\s+)?(the\s+)?previous\s+instructions", re.I
+    )),
+    ("disregard_above_en", re.compile(
+        r"disregard\s+(all\s+)?(the\s+)?(above|previous)", re.I
+    )),
+    ("system_prompt_en", re.compile(r"system\s*prompt", re.I)),
+    ("role_change_en", re.compile(r"\byou\s+are\s+now\b|\bact\s+as\b", re.I)),
+    ("ignore_instructions_ru", re.compile(
+        r"игнорируй\s+(вс[её]\s+)?(предыдущ\w*|прошл\w*)\s+инструкц\w*", re.I
+    )),
+    ("max_xp_ru", re.compile(
+        r"(выдай|начисли|поставь)\S*\s+(мне\s+)?максимум\S*\s+(xp|опыт\w*|очков)", re.I
+    )),
+    ("system_prompt_ru", re.compile(r"системн\w*\s+промпт", re.I)),
+    ("role_change_ru", re.compile(r"(измени|смени)\s+(свою\s+)?роль", re.I)),
+    ("format_change_ru", re.compile(r"измени\s+формат\s+(ответа|вывода)", re.I)),
+]
+
+
+def detect_suspicious_report(text: str) -> str | None:
+    """Эвристика на маркеры prompt-injection в отчёте.
+
+    Возвращает имя сработавшего маркера (для лога) или None. НЕ блокирует
+    отчёт и не влияет на вызов evaluate_report/фоллбэк моделей — только
+    сигнал для WARNING-лога, чтобы не банить честные отчёты по ошибке.
+    """
+    for name, pattern in _INJECTION_PATTERNS:
+        if pattern.search(text):
+            return name
+    return None
 
 
 def _parse_json(text: str) -> dict | None:
