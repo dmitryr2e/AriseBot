@@ -14,6 +14,8 @@ from bot import config, db, game, texts
 from bot.handlers import setup_routers
 from bot.scheduler import setup_scheduler
 
+from bot import lock, monitoring
+
 
 class ActivityMiddleware(BaseMiddleware):
     """Отмечает активность (last_seen) и начисляет win-back бонус вернувшимся."""
@@ -80,6 +82,8 @@ async def main() -> None:
         log.error("Переменная окружения TELEGRAM_BOT_TOKEN не задана. Завершение.")
         sys.exit(1)
 
+    instance_lock = lock.acquire()
+
     await db.init_db()
     log.info("База данных инициализирована: %s", config.DB_PATH)
 
@@ -87,6 +91,8 @@ async def main() -> None:
         token=config.BOT_TOKEN,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    monitoring.setup(bot)
+    
     dp = Dispatcher()
     dp.update.outer_middleware(ActivityMiddleware())
     dp.include_router(setup_routers())
@@ -115,6 +121,8 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scheduler.shutdown(wait=False)
+        monitoring.shutdown()
+        instance_lock.release()
         await db.close_db()
 
 
