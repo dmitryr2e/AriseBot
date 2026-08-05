@@ -55,10 +55,11 @@ async def test_add_report_same_text_different_users_does_not_conflict(user, conn
 
 
 async def test_report_is_duplicate_pre_check(user):
-    assert await db.report_is_duplicate(1, "Отжался 50 раз") is False
-    await db.add_report(1, game.today_str(), "Отжался 50 раз", 40, "ок")
-    assert await db.report_is_duplicate(1, "отжался 50 РАЗ") is True
-    assert await db.report_is_duplicate(1, "Пробежал 5 км") is False
+    today = game.today_str()
+    assert await db.report_is_duplicate(1, today, "Отжался 50 раз") is False
+    await db.add_report(1, today, "Отжался 50 раз", 40, "ок")
+    assert await db.report_is_duplicate(1, today, "отжался 50 РАЗ") is True
+    assert await db.report_is_duplicate(1, today, "Пробежал 5 км") is False
 
 
 # ---------- право на забвение ----------
