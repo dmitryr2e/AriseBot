@@ -176,7 +176,7 @@ async def init_db() -> aiosqlite.Connection:
     # они бы падали, потому что на старой БД колонки ещё не существует.
     # По tz группируются все фоновые джобы (rollover, напоминания, дедлайн).
     await _db.execute("CREATE INDEX IF NOT EXISTS idx_users_tz ON users(tz)")
-    
+
     # Дедуп повторных отчётов за конкретный игровой день
     await _db.execute("DROP INDEX IF EXISTS idx_reports_user_fingerprint")
     await _db.execute(
