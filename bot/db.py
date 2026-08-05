@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS users (
     streak          INTEGER DEFAULT 0,
     best_streak     INTEGER DEFAULT 0,
     is_premium      INTEGER DEFAULT 0,
-    reminder_time   TEXT DEFAULT '20:00',
+    reminder_time    TEXT DEFAULT '20:00',
     last_daily_date TEXT DEFAULT '',
     weekly_xp       INTEGER DEFAULT 0,
     weekly_done     INTEGER DEFAULT 0,
@@ -73,13 +73,13 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS idx_reports_user_date ON reports(user_id, report_date);
 
 CREATE TABLE IF NOT EXISTS bosses (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    week_key   TEXT UNIQUE NOT NULL,
-    name       TEXT NOT NULL,
-    max_hp     INTEGER NOT NULL,
-    hp         INTEGER NOT NULL,
-    defeated   INTEGER DEFAULT 0,
-    rewarded   INTEGER DEFAULT 0
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_key    TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    max_hp      INTEGER NOT NULL,
+    hp          INTEGER NOT NULL,
+    defeated    INTEGER DEFAULT 0,
+    rewarded    INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS boss_damage (
@@ -121,7 +121,7 @@ _USER_MIGRATIONS = {
     "total_done": "INTEGER DEFAULT 0",
     "total_reports": "INTEGER DEFAULT 0",
     "hide_in_rating": "INTEGER DEFAULT 0",
-    "last_seen": "TEXT DEFAULT ''",       # дата последней активности (YYYY-MM-DD)
+    "last_seen": "TEXT DEFAULT ''",        # дата последней активности (YYYY-MM-DD)
     "winback_sent": "INTEGER DEFAULT 0",  # отправлено ли win-back сообщение
     "ai_notice_seen": "INTEGER DEFAULT 0",  # показан ли дисклеймер об обработке в Gemini
     # Дата (YYYY-MM-DD), до конца которой охотник «при смерти»: HP на нуле,
@@ -176,13 +176,13 @@ async def init_db() -> aiosqlite.Connection:
     # они бы падали, потому что на старой БД колонки ещё не существует.
     # По tz группируются все фоновые джобы (rollover, напоминания, дедлайн).
     await _db.execute("CREATE INDEX IF NOT EXISTS idx_users_tz ON users(tz)")
-    # Дедуп повторных отчётов (AUDIT 2.4): один и тот же нормализованный
-    # текст от одного охотника засчитывается только раз. NULL (старые строки
-    # без fingerprint) уникальностью не связаны — SQLite не считает
-    # несколько NULL конфликтующими значениями.
+
+    # Дедуп повторных отчётов за конкретный игровой день
+    await _db.execute("DROP INDEX IF EXISTS idx_reports_user_fingerprint")
     await _db.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_user_fingerprint "
-        "ON reports(user_id, fingerprint)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_user_date_fingerprint "
+        "ON reports(user_id, report_date, fingerprint) "
+        "WHERE fingerprint IS NOT NULL"
     )
     await _db.commit()
     return _db
@@ -305,7 +305,7 @@ async def quests_progress_for_date(date: str) -> dict[int, tuple[int, int]]:
     """{user_id: (всего, сделано)} по квестам за дату — одним запросом.
 
     Пользователей без квестов на эту дату в словаре НЕТ (трактовать как (0, 0)).
-    Нужна, чтобы фоновые джобы не дёргали quests_for_date в цикл�� по базе.
+    Нужна, чтобы фоновые джобы не дёргали quests_for_date в цикле по базе.
     """
     cur = await db().execute(
         "SELECT user_id, COUNT(*) AS total, SUM(done) AS done "
@@ -562,38 +562,45 @@ async def reports_count_today(user_id: int, date: str) -> int:
     return row["c"]
 
 
-async def report_is_duplicate(user_id: int, text: str) -> bool:
-    """Уже был у этого охотника отчёт с таким же (нормализованным) текстом?
-
-    Дешёвый pre-check ДО вызова Gemini — чтобы не тратить запрос к ИИ на
-    заведомую копипасту. Не единственная защита: add_report всё равно
-    гарантирует уникальность на уровне БД (гонка двух одинаковых отчётов
-    подряд).
-    """
+async def report_is_duplicate(
+    user_id: int,
+    report_date: str,
+    text: str,
+) -> bool:
+    """Проверить копию отчёта только за конкретный игровой день."""
     fingerprint = ai.fingerprint_report(text)
+
     cur = await db().execute(
-        "SELECT 1 FROM reports WHERE user_id = ? AND fingerprint = ? LIMIT 1",
-        (user_id, fingerprint),
+        "SELECT 1 FROM reports "
+        "WHERE user_id = ? AND report_date = ? AND fingerprint = ? "
+        "LIMIT 1",
+        (user_id, report_date, fingerprint),
     )
     return await cur.fetchone() is not None
 
 
-async def add_report(user_id: int, date: str, text: str, xp: int, verdict: str) -> bool:
-    """Записать отчёт. Возвращает True, если это новый отчёт (не дубль).
-
-    Дедуп по (user_id, fingerprint) — идентичный (без учёта регистра и
-    пробелов) текст от одного охотника засчитывается только один раз
-    (AUDIT 2.4). Тот же идиом, что record_payment для charge_id (AUDIT 1.2):
-    INSERT OR IGNORE + rowcount, без отдельной проверки-и-записи под гонку.
-    Вызывающая сторона обязана НЕ начислять XP/статы/total_reports, если
-    вернулось False.
-    """
+async def add_report(
+    user_id: int,
+    report_date: str,
+    text: str,
+    xp: int,
+    verdict: str,
+) -> bool:
+    """Записать отчёт. False означает дубль за тот же день."""
     fingerprint = ai.fingerprint_report(text)
+
     cur = await db().execute(
         "INSERT OR IGNORE INTO reports "
         "(user_id, report_date, text, xp_awarded, verdict, fingerprint) "
         "VALUES (?, ?, ?, ?, ?, ?)",
-        (user_id, date, text, xp, verdict, fingerprint),
+        (
+            user_id,
+            report_date,
+            text,
+            xp,
+            verdict,
+            fingerprint,
+        ),
     )
     await db().commit()
     return cur.rowcount > 0
@@ -729,7 +736,7 @@ async def user_payments(user_id: int, limit: int = 20) -> list[aiosqlite.Row]:
 
 
 async def mark_payment_refunded(charge_id: str) -> bool:
-    """True — пометили как возвращён��ый (ранее возвращён не был)."""
+    """True — пометили как возвращённый (ранее возвращён не был)."""
     cur = await db().execute(
         "UPDATE payments SET refunded = 1 WHERE charge_id = ? AND refunded = 0",
         (charge_id,),

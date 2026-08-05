@@ -88,9 +88,11 @@ async def report_received(message: Message, state: FSMContext) -> None:
         await state.clear()
         return
 
+    report_date = game.today_str(user)
+
     # Повторная проверка лимита (защита от гонок)
     limit = _daily_limit(user)
-    used = await db.reports_count_today(message.from_user.id, game.today_str(user))
+    used = await db.reports_count_today(message.from_user.id, report_date)
     if used >= limit:
         await state.clear()
         await _answer_limit(message, user, limit)
@@ -116,7 +118,11 @@ async def report_received(message: Message, state: FSMContext) -> None:
     # должна повторно уходить в Gemini и тем более приносить награду.
     # Дешёвый pre-check здесь + гарантия на уровне БД в add_report ниже —
     # на случай гонки двух одинаковых отчётов подряд.
-    if await db.report_is_duplicate(message.from_user.id, text):
+    if await db.report_is_duplicate(
+        message.from_user.id,
+        report_date,
+        text,
+    ):
         await message.answer(texts.REPORT_DUPLICATE)
         return
 
@@ -129,7 +135,11 @@ async def report_received(message: Message, state: FSMContext) -> None:
         return
 
     is_new_report = await db.add_report(
-        message.from_user.id, game.today_str(user), text, xp, verdict
+        message.from_user.id,
+        report_date,
+        text,
+        xp,
+        verdict,
     )
     if not is_new_report:
         # Гонка: тот же fingerprint успел записаться, пока ждали ответ ИИ.

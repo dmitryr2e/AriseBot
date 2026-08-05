@@ -8,7 +8,7 @@ from aiogram.exceptions import TelegramRetryAfter
 from aiogram.types import InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from bot import config, db, game, keyboards, render, share, texts, timeutil
+from bot import config, db, game, keyboards, monitoring, render, share, texts, timeutil
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +93,7 @@ async def daily_rollover(bot: Bot) -> None:
                 log.exception("daily_rollover: ошибка на пользователе %s", user["user_id"])
     if processed or failed:
         log.info("daily_rollover: обработано %s, ошибок %s", processed, failed)
+    await monitoring.note_rollover(processed, failed)
 
 
 async def _rollover_user(bot: Bot, user) -> None:
@@ -116,7 +117,7 @@ async def distribute_boss_rewards(bot: Bot) -> None:
     """Награды за побеждённого босса недели.
 
     Вызывается сразу после добивания (см. spawn_boss_rewards) и повторно перед
-    недельным отчётом как страховка. Идемпотентна: право на выдачу занимается
+    недельным отчётом как страховка. Идемпотентна: право на выдачу занимает
     атомарно через db.claim_boss_rewarded, поэтому второй вызов выйдет молча.
     """
     from bot import boss as boss_mod
@@ -164,7 +165,7 @@ async def distribute_boss_rewards(bot: Bot) -> None:
 
 
 # Ссылки на живые таски по неделе босса. Нужны сразу для двух целей:
-# (1) без сильной ссылки сборщик мусора может убить fire-and-forget зад��чу
+# (1) без сильной ссылки сборщик мусора может убить fire-and-forget задачу
 # до её завершения — asyncio держит только слабые ссылки;
 # (2) дедуп: пока выдача по этому боссу идёт, второй таск не создаётся.
 _reward_tasks: dict[str, asyncio.Task] = {}
@@ -422,18 +423,18 @@ async def backup_db() -> None:
 
 def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(timezone=config.TZ)
-    scheduler.add_job(send_reminders, "cron", minute="*", args=[bot])
-    scheduler.add_job(backup_db, "interval", hours=config.BACKUP_INTERVAL_HOURS)
+    scheduler.add_job(monitoring.job(send_reminders), "cron", minute="*", args=[bot])
+    scheduler.add_job(monitoring.job(backup_db), "interval", hours=config.BACKUP_INTERVAL_HOURS)
     # Оба джоба теперь работают по локальному времени охотника и сами
     # выбирают, чей пояс дозрел, поэтому тикают чаще. Шаг 15 минут выбран под
     # четвертьчасовые смещения поясов — при шаге в час их бы сносило.
-    scheduler.add_job(daily_rollover, "cron", minute="5,20,35,50", args=[bot])
-    scheduler.add_job(streak_danger, "cron", minute="0,15,30,45", args=[bot])
-    scheduler.add_job(winback, "cron", hour=12, minute=30, args=[bot])
-    scheduler.add_job(boss_low_hp_alert, "cron", minute=15, args=[bot])
-    scheduler.add_job(onboarding_chain, "cron", minute=40, args=[bot])
+    scheduler.add_job(monitoring.job(daily_rollover), "cron", minute="5,20,35,50", args=[bot])
+    scheduler.add_job(monitoring.job(streak_danger), "cron", minute="0,15,30,45", args=[bot])
+    scheduler.add_job(monitoring.job(winback), "cron", hour=12, minute=30, args=[bot])
+    scheduler.add_job(monitoring.job(boss_low_hp_alert), "cron", minute=15, args=[bot])
+    scheduler.add_job(monitoring.job(onboarding_chain), "cron", minute=40, args=[bot])
     scheduler.add_job(
-        weekly_report,
+        monitoring.job(weekly_report),
         "cron",
         day_of_week=config.WEEKLY_REPORT_DAY,
         hour=config.WEEKLY_REPORT_HOUR,
