@@ -1,0 +1,45 @@
+name: Brain context snapshot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "# SoloLevelingBot source snapshot"
+            echo
+            echo "Generated automatically. Do not edit manually."
+            echo
+            while IFS= read -r file; do
+              case "$file" in
+                *.py|*.tsx|*.ts|*.css|*.mjs|*.yml|*.yaml|*.md|Dockerfile|docker-compose.yml|requirements.txt|package.json)
+                  echo
+                  echo "================================================================"
+                  echo "FILE: $file"
+                  echo "================================================================"
+                  cat "$file"
+                  ;;
+              esac
+            done < <(git ls-files | sort)
+          } > AI_CONTEXT.md
+
+      - name: Commit snapshot
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add AI_CONTEXT.md
+          git commit -m "chore: generate AI audit context" || exit 0
+          git push
