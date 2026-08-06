@@ -1,6 +1,4 @@
 """Хендлеры: /start (с рефералкой), /help, /profile."""
-from datetime import datetime, timedelta
-
 from aiogram import Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -31,14 +29,26 @@ def _parse_ref(args: str | None) -> int:
 
 
 async def _process_referral(message: Message, new_user_id: int, referrer_id: int) -> None:
-    """Начислить бонусы новичку и вербовщику, выдать премиум за порог."""
+    """Начислить бонусы новичку и вербовщику, выдать премиум за порог.
+
+    Все переходы состояния атомарны и происходят ДО отправки сообщений:
+    доставка может упасть (вербовщик заблокировал бота), но награда за это
+    пропасть не должна.
+    """
     referrer = await db.get_user(referrer_id)
     if referrer is None or referrer_id == new_user_id:
         return
-    await db.update_user(new_user_id, referred_by=referrer_id)
+
+    # Связь занимаем атомарно: /start обрабатывает вербовку только для нового
+    # пользователя, но два быстрых нажатия по одной ссылке успевали пройти
+    # проверку «пользователя ещё нет» одновременно и начислить бонус дважды.
+    if not await db.claim_referral(new_user_id, referrer_id):
+        return
 
     # Бонус новичку
     new_user = await db.get_user(new_user_id)
+    if new_user is None:
+        return
     await game.grant_xp(new_user, config.REF_BONUS_XP, count_quest=False)
     # Имена в этих двух сообщениях — чужие: имя вербовщика видит новичок, имя
     # новичка видит вербовщик. Оба идут в HTML, поэтому экранируем.
@@ -47,12 +57,25 @@ async def _process_referral(message: Message, new_user_id: int, referrer_id: int
         texts.REF_WELCOME_BONUS.format(name=ref_name, bonus=config.REF_BONUS_XP)
     )
 
-    # Бонус вербовщику. Инкрементом: двое новичков могут прийти по одной
-    # ссылке одновременно, и абсолютная запись потеряла бы одну вербовку.
-    await db.increment_user(referrer_id, ref_count=1)
-    referrer = await db.get_user(referrer_id)
-    ref_count = referrer["ref_count"]
+    # Бонус вербовщику. Инкремент возвращает новое значение одним запросом:
+    # отдельные UPDATE + SELECT при двух одновременных вербовках оба видели
+    # уже дважды увеличенный ref_count, и точный порог не ловил никто.
+    ref_count = await db.increment_and_get(referrer_id, "ref_count")
     await game.grant_xp(referrer, config.REF_BONUS_XP, count_quest=False)
+
+    # Премиум за порог — до отправки: раньше и выдача, и уведомление лежали в
+    # одном try, поэтому вербовщик, заблокировавший бота, терял награду.
+    # Продлеваем от текущей даты окончания, иначе оплаченный Монарх
+    # укорачивался бы до недели.
+    premium_granted = ref_count == config.REF_PREMIUM_THRESHOLD
+    if premium_granted:
+        await db.update_user(
+            referrer_id,
+            premium_until=game.premium_until_after(
+                referrer["premium_until"], config.REF_PREMIUM_DAYS
+            ),
+        )
+
     new_name = user_name(message.from_user)
     try:
         await message.bot.send_message(
@@ -61,12 +84,7 @@ async def _process_referral(message: Message, new_user_id: int, referrer_id: int
                 name=new_name, bonus=config.REF_BONUS_XP, count=ref_count
             ),
         )
-        # Премиум за порог
-        if ref_count == config.REF_PREMIUM_THRESHOLD:
-            until = datetime.now(config.TZ) + timedelta(days=config.REF_PREMIUM_DAYS)
-            await db.update_user(
-                referrer_id, premium_until=until.strftime("%Y-%m-%d %H:%M:%S")
-            )
+        if premium_granted:
             await message.bot.send_message(
                 referrer_id,
                 texts.REF_PREMIUM_GRANTED.format(
