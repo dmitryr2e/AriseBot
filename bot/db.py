@@ -3,7 +3,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from bot import ai, config
+from bot import ai, config, sqlsafe
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -217,6 +217,9 @@ async def create_user(user_id: int, username: str, first_name: str) -> None:
 async def update_user(user_id: int, **fields) -> None:
     if not fields:
         return
+    # Имена колонок уходят в запрос строкой — их нельзя забиндить параметром,
+    # поэтому единственная защита от инъекции здесь — allowlist (bot/sqlsafe.py).
+    sqlsafe.require_user_columns(fields)
     cols = ", ".join(f"{k} = ?" for k in fields)
     await db().execute(
         f"UPDATE users SET {cols} WHERE user_id = ?",
@@ -234,6 +237,7 @@ async def increment_user(user_id: int, **deltas: int) -> None:
     deltas = {k: v for k, v in deltas.items() if v}
     if not deltas:
         return
+    sqlsafe.require_user_columns(deltas)
     cols = ", ".join(f"{k} = {k} + ?" for k in deltas)
     await db().execute(
         f"UPDATE users SET {cols} WHERE user_id = ?",
@@ -258,6 +262,9 @@ async def compare_and_set_user(
     остаток XP считаются циклом вычитания порогов), а соединение с SQLite
     одно на процесс, поэтому длинную транзакцию открыть нельзя.
     """
+    # В запрос строкой уходят и SET-, и WHERE-идентификаторы, поэтому
+    # проверяем все три словаря разом.
+    sqlsafe.require_user_columns({*expect, *(absolute or {}), *(increments or {})})
     sets: list[str] = []
     params: list = []
     for col, value in (absolute or {}).items():
@@ -484,6 +491,8 @@ async def delete_user_data(user_id: int) -> None:
 
 
 async def count_where(table: str, where: str = "1=1", params: tuple = ()) -> int:
+    # Имя таблицы подставляется в запрос строкой — сверяем с allowlist.
+    sqlsafe.require_table(table)
     cur = await db().execute(f"SELECT COUNT(*) AS c FROM {table} WHERE {where}", params)
     return (await cur.fetchone())["c"]
 
