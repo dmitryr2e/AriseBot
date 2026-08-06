@@ -19,6 +19,12 @@ const securityHeaders = [
 ]
 
 const nextConfig = {
+  // TypeScript 7 is the native CLI and no longer exposes lib/typescript.js.
+  // Next 16.2.12 ships the official compatibility backend for it, but it must
+  // be enabled explicitly or next build misdetects TS7 and fails in CI.
+  experimental: {
+    useTypeScriptCli: true,
+  },
   images: {
     unoptimized: true,
   },
