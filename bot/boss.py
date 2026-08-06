@@ -1,4 +1,5 @@
 """Босс недели: общий рейд-босс, урон которому наносится полученным XP."""
+import asyncio
 from datetime import datetime
 
 from bot import config, db
@@ -13,6 +14,12 @@ BOSS_NAMES = [
     "Керберос, Хранитель Бездны",
     "Архилич Некрон",
 ]
+
+# damage_boss обновлял HP и таблицу урона разными SQL-операциями. Два
+# одновременных grant_xp могли оба увидеть живого босса и записать урон уже
+# после его смерти, искажая топ-3 награждаемых. Бот запускается в одном
+# процессе (lock.py), поэтому локальной блокировки достаточно и не тянет Redis.
+_damage_lock = asyncio.Lock()
 
 
 def week_key(dt: datetime | None = None) -> str:
@@ -36,11 +43,14 @@ async def get_or_create_boss():
 
 async def deal_damage(user_id: int, xp_amount: int) -> tuple[int, bool]:
     """Урон боссу = полученный XP. Возвращает (остаток HP, добит ли этим ударом)."""
-    boss = await get_or_create_boss()
-    if boss["defeated"]:
+    if xp_amount <= 0:
         return 0, False
-    hp_left = await db.damage_boss(boss["id"], user_id, xp_amount)
-    return hp_left, hp_left <= 0
+    async with _damage_lock:
+        boss = await get_or_create_boss()
+        if boss["defeated"]:
+            return 0, False
+        hp_left = await db.damage_boss(boss["id"], user_id, xp_amount)
+        return hp_left, hp_left <= 0
 
 
 def bar(hp: int, max_hp: int, width: int = 14) -> str:
