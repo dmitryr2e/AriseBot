@@ -5,7 +5,7 @@ from datetime import datetime
 from bot import config, db
 
 BOSS_NAMES = [
-    "Игрис, Рыцарь Крови",
+    "Мортекс, Рыцарь Крови",
     "Барука, Король Ледяных Клыков",
     "Каргалган, Вождь Гоблинов",
     "Метус, Страж Врат",
@@ -15,9 +15,6 @@ BOSS_NAMES = [
     "Архилич Некрон",
 ]
 
-# damage_boss обновлял HP и таблицу урона разными SQL-операциями. Два
-# одновременных grant_xp могли оба увидеть живого босса и записать урон уже
-# после его смерти, искажая топ-3 награждаемых.
 _damage_lock: asyncio.Lock | None = None
 _damage_loop: asyncio.AbstractEventLoop | None = None
 
@@ -46,7 +43,6 @@ async def get_or_create_boss():
         return boss
     hunters = len(await db.all_users())
     max_hp = config.BOSS_BASE_HP + hunters * config.BOSS_HP_PER_HUNTER
-    # Имя детерминировано от недели, чтобы не зависеть от гонок INSERT OR IGNORE
     name = BOSS_NAMES[sum(map(ord, key)) % len(BOSS_NAMES)]
     return await db.create_boss(key, name, max_hp)
 
