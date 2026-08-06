@@ -66,6 +66,9 @@ DB_PATH = os.getenv("BOT_DB_PATH", str(DATA_DIR / "hunter.db"))
 BACKUP_DIR = Path(os.getenv("BOT_BACKUP_DIR", str(DATA_DIR / "backups")))
 BACKUP_INTERVAL_HOURS = int(os.getenv("BACKUP_INTERVAL_HOURS", "6"))
 BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "28"))  # ретеншн: 28 копий (~7 суток при 6ч)
+# Fernet-ключ для шифрования дампов БД. Пустое значение = бэкапы отключены:
+# класть на диск незашифрованную копию базы с токенами и платежами нельзя.
+BACKUP_ENCRYPTION_KEY = os.getenv("BACKUP_ENCRYPTION_KEY", "")
 
 FONT_PATH = BASE_DIR / "assets" / "RussoOne-Regular.ttf"
 

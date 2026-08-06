@@ -15,6 +15,13 @@ from bot import config, db, game, texts
 log = logging.getLogger(__name__)
 router = Router()
 
+# Возврат Stars состоит из удалённого вызова Telegram и последующей отметки в
+# SQLite. Без блокировки два одновременных /refund могли оба пройти проверку
+# refunded=0 и отправить два возврата по одному charge_id. Админские команды
+# обрабатываются одним процессом, поэтому asyncio.Lock закрывает гонку без
+# дополнительной инфраструктуры.
+_refund_lock = asyncio.Lock()
+
 
 def _is_admin(message: Message) -> bool:
     return message.from_user.id in config.ADMIN_IDS
@@ -107,53 +114,55 @@ async def cmd_refund(message: Message, command: CommandObject) -> None:
             f"<b>{texts.SYS}</b>\n\nФормат: <code>/refund charge_id</code>"
         )
         return
-    charge_id = command.args.strip()
-    payment = await db.get_payment(charge_id)
-    if payment is None:
-        await message.answer(f"<b>{texts.SYS}</b>\n\nПлатёж не найден: <code>{charge_id}</code>")
-        return
-    if payment["refunded"]:
-        await message.answer(f"<b>{texts.SYS}</b>\n\nЭтот платёж уже возвращён.")
-        return
 
-    try:
-        await message.bot.refund_star_payment(
-            user_id=payment["user_id"],
-            telegram_payment_charge_id=charge_id,
-        )
-    except Exception as e:  # noqa: BLE001
-        log.exception("Ошибка возврата платежа %s", charge_id)
-        await message.answer(f"<b>{texts.SYS}</b>\n\nОшибка возврата: <code>{e}</code>")
-        return
+    async with _refund_lock:
+        charge_id = command.args.strip()
+        payment = await db.get_payment(charge_id)
+        if payment is None:
+            await message.answer(f"<b>{texts.SYS}</b>\n\nПлатёж не найден: <code>{charge_id}</code>")
+            return
+        if payment["refunded"]:
+            await message.answer(f"<b>{texts.SYS}</b>\n\nЭтот платёж уже возвращён.")
+            return
 
-    await db.mark_payment_refunded(charge_id)
-
-    # Откат товара, где это возможно
-    user = await db.get_user(payment["user_id"])
-    rollback_note = ""
-    if user is not None:
-        if payment["payload"] == "premium30":
-            await db.update_user(payment["user_id"], premium_until="", is_premium=0)
-            rollback_note = " Премиум снят."
-        elif payment["payload"] == "freeze" and user["streak_freezes"] > 0:
-            await db.update_user(
-                payment["user_id"], streak_freezes=user["streak_freezes"] - 1
+        try:
+            await message.bot.refund_star_payment(
+                user_id=payment["user_id"],
+                telegram_payment_charge_id=charge_id,
             )
-            rollback_note = " Заморозка списана."
-        # revive не откатываем: HP уже потрачено на игровой процесс
+        except Exception as e:  # noqa: BLE001
+            log.exception("Ошибка возврата платежа %s", charge_id)
+            await message.answer(f"<b>{texts.SYS}</b>\n\nОшибка возврата: <code>{e}</code>")
+            return
 
-    try:
-        await message.bot.send_message(
-            payment["user_id"],
-            f"<b>{texts.SYS}</b>\n\nТвой платёж ({payment['amount_stars']} ⭐) возвращён.",
+        await db.mark_payment_refunded(charge_id)
+
+        # Откат товара, где это возможно
+        user = await db.get_user(payment["user_id"])
+        rollback_note = ""
+        if user is not None:
+            if payment["payload"] == "premium30":
+                await db.update_user(payment["user_id"], premium_until="", is_premium=0)
+                rollback_note = " Премиум снят."
+            elif payment["payload"] == "freeze" and user["streak_freezes"] > 0:
+                await db.update_user(
+                    payment["user_id"], streak_freezes=user["streak_freezes"] - 1
+                )
+                rollback_note = " Заморозка списана."
+            # revive не откатываем: HP уже потрачено на игровой процесс
+
+        try:
+            await message.bot.send_message(
+                payment["user_id"],
+                f"<b>{texts.SYS}</b>\n\nТвой платёж ({payment['amount_stars']} ⭐) возвращён.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        await message.answer(
+            f"<b>{texts.SYS}</b>\n\nВозврат выполнен: {payment['amount_stars']} ⭐ "
+            f"пользователю {payment['user_id']}.{rollback_note}"
         )
-    except Exception:  # noqa: BLE001
-        pass
-
-    await message.answer(
-        f"<b>{texts.SYS}</b>\n\nВозврат выполнен: {payment['amount_stars']} ⭐ "
-        f"пользователю {payment['user_id']}.{rollback_note}"
-    )
 
 
 @router.message(Command("broadcast"))

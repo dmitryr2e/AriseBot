@@ -1,6 +1,4 @@
 """Хендлер: /premium — статус «Монарх» и разовые покупки через Telegram Stars (XTR)."""
-from datetime import datetime, timedelta
-
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
@@ -126,19 +124,9 @@ async def on_payment(message: Message) -> None:
         return
 
     if payload == "premium30":
-        # Продление от текущей даты окончания, если премиум ещё активен
-        now = datetime.now(config.TZ)
-        base = now
-        current = user["premium_until"] or ""
-        if current:
-            try:
-                existing = datetime.strptime(current, "%Y-%m-%d %H:%M:%S").replace(tzinfo=config.TZ)
-                if existing > now:
-                    base = existing
-            except ValueError:
-                pass
-        until = base + timedelta(days=config.PREMIUM_DAYS)
-        until_str = until.strftime("%Y-%m-%d %H:%M:%S")
+        # Продление от текущей даты окончания, если премиум ещё активен.
+        # Та же формула используется для награды за вербовку (bot/game.py).
+        until_str = game.premium_until_after(user["premium_until"], config.PREMIUM_DAYS)
         await db.update_user(message.from_user.id, premium_until=until_str, is_premium=1)
         await message.answer(texts.PAYMENT_SUCCESS_PREMIUM.format(until=until_str.split(" ")[0]))
 
@@ -153,6 +141,7 @@ async def on_payment(message: Message) -> None:
         )
 
     elif payload == "freeze":
-        count = user["streak_freezes"] + 1
-        await db.update_user(message.from_user.id, streak_freezes=count)
+        # Инкрементом, а не user["streak_freezes"] + 1: строка прочитана до
+        # записи платежа, и две покупки подряд затирали бы друг друга.
+        count = await db.increment_and_get(message.from_user.id, "streak_freezes")
         await message.answer(texts.PAYMENT_SUCCESS_FREEZE.format(count=count))
