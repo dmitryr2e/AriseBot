@@ -17,9 +17,19 @@ BOSS_NAMES = [
 
 # damage_boss обновлял HP и таблицу урона разными SQL-операциями. Два
 # одновременных grant_xp могли оба увидеть живого босса и записать урон уже
-# после его смерти, искажая топ-3 награждаемых. Бот запускается в одном
-# процессе (lock.py), поэтому локальной блокировки достаточно и не тянет Redis.
-_damage_lock = asyncio.Lock()
+# после его смерти, искажая топ-3 награждаемых.
+_damage_lock: asyncio.Lock | None = None
+_damage_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_damage_lock() -> asyncio.Lock:
+    """Вернуть lock текущего event loop. Это важно для изолированных тестов."""
+    global _damage_lock, _damage_loop
+    loop = asyncio.get_running_loop()
+    if _damage_lock is None or _damage_loop is not loop:
+        _damage_lock = asyncio.Lock()
+        _damage_loop = loop
+    return _damage_lock
 
 
 def week_key(dt: datetime | None = None) -> str:
@@ -45,7 +55,7 @@ async def deal_damage(user_id: int, xp_amount: int) -> tuple[int, bool]:
     """Урон боссу = полученный XP. Возвращает (остаток HP, добит ли этим ударом)."""
     if xp_amount <= 0:
         return 0, False
-    async with _damage_lock:
+    async with _get_damage_lock():
         boss = await get_or_create_boss()
         if boss["defeated"]:
             return 0, False
