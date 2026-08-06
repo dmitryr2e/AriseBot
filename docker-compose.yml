@@ -8,6 +8,15 @@ services:
       BOT_DATA_DIR: /app/data
     volumes:
       - bot_data:/app/data
+    # Бот пишет только в /app/data; остальная файловая система контейнера
+    # не должна быть доступна для записи даже при уязвимости приложения.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     logging:
       driver: json-file
       options:
