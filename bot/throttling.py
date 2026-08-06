@@ -55,8 +55,10 @@ COMMAND_COST: dict[str, float] = {
 # Не чаще одного предупреждения в 15 секунд на охотника: иначе на флуд мы
 # отвечаем собственным флудом и сами упираемся в лимиты Telegram.
 NOTICE_COOLDOWN = 15.0
-# Полный и давно не использованный бакет забываем — словарь не должен расти
-# по числу всех, кто когда-либо писал боту.
+# Бакет забывается после IDLE_TTL тишины: за это время он всё равно успевает
+# восстановиться до полного (IDLE_TTL * REFILL_PER_SEC много больше ёмкости),
+# поэтому забытый бакет неотличим от нового. Словарь не должен расти по числу
+# всех, кто когда-либо писал боту.
 IDLE_TTL = 600.0
 PRUNE_INTERVAL = 300.0
 
@@ -106,16 +108,12 @@ def take(user_id: int, cost: float, now: float) -> bool:
 
 
 def prune(now: float) -> None:
-    """Выбросить полные бакеты, по которым давно не было запросов."""
+    """Выбросить бакеты, по которым давно не было запросов. Не чаще PRUNE_INTERVAL."""
     global _last_prune
     if now - _last_prune < PRUNE_INTERVAL:
         return
     _last_prune = now
-    stale = [
-        uid
-        for uid, bucket in _buckets.items()
-        if now - bucket.updated > IDLE_TTL and bucket.tokens >= BUCKET_SIZE
-    ]
+    stale = [uid for uid, bucket in _buckets.items() if now - bucket.updated > IDLE_TTL]
     for uid in stale:
         _buckets.pop(uid, None)
 
