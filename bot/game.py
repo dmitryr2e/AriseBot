@@ -4,7 +4,7 @@ import logging
 import random
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from bot import config, db, timeutil
 from bot.quests_pool import CUSTOM_QUEST_XP, GATE_POOL, QUEST_POOL
@@ -22,6 +22,9 @@ _xp_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 # Сколько раз повторять compare-and-set, если строку изменили между чтением и
 # записью (второй процесс бота, планировщик — там, где замок не помогает)
 _CAS_ATTEMPTS = 10
+
+# Формат хранения premium_until в БД
+PREMIUM_UNTIL_FMT = "%Y-%m-%d %H:%M:%S"
 
 
 def today_str(user=None) -> str:
@@ -94,7 +97,29 @@ def is_premium(user) -> bool:
     until = user["premium_until"] or ""
     if not until:
         return bool(user["is_premium"])
-    return until >= datetime.now(config.TZ).strftime("%Y-%m-%d %H:%M:%S")
+    return until >= datetime.now(config.TZ).strftime(PREMIUM_UNTIL_FMT)
+
+
+def premium_until_after(current: str | None, days: int) -> str:
+    """Новая дата окончания премиума при продлении на `days` дней.
+
+    Отсчёт идёт от текущей даты окончания, если премиум ещё активен, и от
+    «сейчас» в остальных случаях (нет премиума, истёк, битая строка в БД).
+
+    Общая для покупки за звёзды и для награды за вербовку: награда писала
+    дату абсолютно, поэтому Монарх, оплативший 30 дней и на следующий день
+    приведший десятого друга, терял оплаченный срок и получал 7 дней.
+    """
+    now = datetime.now(config.TZ)
+    base = now
+    if current:
+        try:
+            existing = datetime.strptime(current, PREMIUM_UNTIL_FMT).replace(tzinfo=config.TZ)
+            if existing > now:
+                base = existing
+        except ValueError:
+            pass
+    return (base + timedelta(days=days)).strftime(PREMIUM_UNTIL_FMT)
 
 
 def is_dying(user) -> bool:
@@ -254,7 +279,7 @@ async def _ensure_today_locked(user) -> DayEvents:
         dying_until=dying_until,
     )
 
-    # --- Бонус вехи серии (после сохранения основ��ого состояния) ---
+    # --- Бонус вехи серии (после сохранения основного состояния) ---
     if milestone:
         events.milestone = milestone
         fresh = await db.get_user(user["user_id"])
