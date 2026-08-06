@@ -5,6 +5,10 @@ on:
     branches: [main]
   pull_request:
 
+# Токен воркфлоу только на чтение: CI ничего не пишет в репозиторий.
+permissions:
+  contents: read
+
 jobs:
   bot:
     name: Bot (lint + tests)
@@ -27,6 +31,14 @@ jobs:
 
       - name: Tests (pytest)
         run: pytest
+
+      # Информационно: новая CVE в зависимости не должна блокировать релиз
+      # фикса, но должна быть видна в логе сборки.
+      - name: Dependency audit (pip-audit)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
 
       - name: Docker build
         run: docker build -t bot-ci .
@@ -51,6 +63,10 @@ jobs:
 
       - name: Type check
         run: pnpm exec tsc --noEmit
+
+      - name: Dependency audit (pnpm)
+        continue-on-error: true
+        run: pnpm audit --audit-level high
 
       - name: Build
         run: pnpm build

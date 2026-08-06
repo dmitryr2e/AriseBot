@@ -5,8 +5,21 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot import config, db, game, texts
 from bot.handlers.helpers import load_user, notify_xp_events, process_day_events
+from bot.safehtml import esc
 
 router = Router()
+
+
+def _callback_id(data: str) -> int | None:
+    """id из callback_data вида 'done:123'. None — данные подделаны или битые.
+
+    callback_data приходит от клиента и подделывается элементарно, а голый
+    int() ронял хендлер в глобальный обработчик ошибок.
+    """
+    try:
+        return int(data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        return None
 
 
 def _quests_view(quests) -> tuple[str, InlineKeyboardMarkup | None]:
@@ -16,8 +29,10 @@ def _quests_view(quests) -> tuple[str, InlineKeyboardMarkup | None]:
     for q in quests:
         mark = "✅" if q["done"] else "◻"
         tag = " ⟨личный⟩" if q["is_custom"] else ""
+        # Заголовок личного квеста пишет сам пользователь — в HTML он идёт
+        # только экранированным. В тексте кнопки разметки нет, там сырой.
         lines.append(
-            f"{mark} <b>{q['title']}</b>{tag}\n"
+            f"{mark} <b>{esc(q['title'])}</b>{tag}\n"
             f"     [{config.STAT_LABELS[q['stat']]}] +{q['xp']} XP"
         )
         if not q["done"]:
@@ -46,7 +61,10 @@ async def cmd_quests(message: Message) -> None:
 @router.callback_query(F.data.startswith("first:"))
 async def cb_first_quest_done(callback: CallbackQuery) -> None:
     """Онбординг: выполнение первого квеста с мгновенным фидбеком."""
-    quest_id = int(callback.data.split(":", 1)[1])
+    quest_id = _callback_id(callback.data)
+    if quest_id is None:
+        await callback.answer("Квест не найден в реестре.", show_alert=True)
+        return
     quest = await db.get_quest(quest_id)
     if quest is None or quest["user_id"] != callback.from_user.id:
         await callback.answer("Квест не найден в реестре.", show_alert=True)
@@ -71,7 +89,7 @@ async def cb_first_quest_done(callback: CallbackQuery) -> None:
     progress = f"Опыт: {result.xp} / {result.xp_needed}"
     await callback.message.answer(
         texts.QUEST_DONE.format(
-            title=quest["title"],
+            title=esc(quest["title"]),
             xp=result.amount,
             stat=config.STAT_LABELS[quest["stat"]],
             progress=progress,
@@ -88,7 +106,10 @@ async def cb_first_quest_done(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("done:"))
 async def cb_quest_done(callback: CallbackQuery) -> None:
-    quest_id = int(callback.data.split(":", 1)[1])
+    quest_id = _callback_id(callback.data)
+    if quest_id is None:
+        await callback.answer("Квест не найден в реестре.", show_alert=True)
+        return
     quest = await db.get_quest(quest_id)
     if quest is None or quest["user_id"] != callback.from_user.id:
         await callback.answer("Квест не найден в реестре.", show_alert=True)
@@ -113,7 +134,7 @@ async def cb_quest_done(callback: CallbackQuery) -> None:
     progress = f"Опыт: {result.xp} / {result.xp_needed}"
     await callback.message.answer(
         texts.QUEST_DONE.format(
-            title=quest["title"],
+            title=esc(quest["title"]),
             xp=result.amount,
             stat=config.STAT_LABELS[quest["stat"]],
             progress=progress,

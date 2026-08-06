@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from bot import config, db, game, keyboards, texts
 from bot.handlers.helpers import load_user
 from bot.quests_pool import CUSTOM_QUEST_XP
+from bot.safehtml import esc
 
 router = Router()
 
@@ -53,9 +54,11 @@ async def cmd_addquest(message: Message, command: CommandObject, state: FSMConte
         return
 
     await state.set_state(AddQuestFlow.waiting_stat)
+    # В FSM кладём сырой заголовок (в БД он тоже хранится как есть),
+    # экранируем только на выводе в HTML.
     await state.update_data(title=title)
     await message.answer(
-        texts.ADDQUEST_PICK_STAT.format(title=title), reply_markup=_stat_keyboard()
+        texts.ADDQUEST_PICK_STAT.format(title=esc(title)), reply_markup=_stat_keyboard()
     )
 
 
@@ -91,7 +94,7 @@ async def cb_pick_stat(callback: CallbackQuery, state: FSMContext) -> None:
         )
 
     await callback.message.edit_text(
-        texts.ADDQUEST_DONE.format(title=title, stat=config.STAT_LABELS[stat])
+        texts.ADDQUEST_DONE.format(title=esc(title), stat=config.STAT_LABELS[stat])
     )
     await callback.answer()
 
@@ -120,7 +123,7 @@ async def cmd_myquests(message: Message) -> None:
     lines = [f"<b>{texts.SYS} // ЛИЧНЫЕ КВЕСТЫ</b>  ⟨{len(customs)}/{limit}⟩", ""]
     buttons = []
     for cq in customs:
-        lines.append(f"◈ <b>{cq['title']}</b> [{config.STAT_LABELS[cq['stat']]}]")
+        lines.append(f"◈ <b>{esc(cq['title'])}</b> [{config.STAT_LABELS[cq['stat']]}]")
         buttons.append(
             [InlineKeyboardButton(text=f"Удалить: {cq['title'][:32]}", callback_data=f"cqdel:{cq['id']}")]
         )
@@ -131,7 +134,13 @@ async def cmd_myquests(message: Message) -> None:
 
 @router.callback_query(F.data.startswith("cqdel:"))
 async def cb_delete_custom(callback: CallbackQuery) -> None:
-    cq_id = int(callback.data.split(":", 1)[1])
+    try:
+        cq_id = int(callback.data.split(":", 1)[1])
+    except (IndexError, ValueError):
+        # callback_data подделывается тривиально: битое значение — не повод
+        # ронять хендлер в глобальный обработчик ошибок.
+        await callback.answer("Квест не найден в реестре.", show_alert=True)
+        return
     await db.delete_custom_quest(callback.from_user.id, cq_id)
     await callback.message.answer(texts.CUSTOM_DELETED)
     await callback.answer("Удалено.")
