@@ -10,8 +10,10 @@ export const SITE_URL =
 export const SUPPORT_CONTACT =
   process.env.NEXT_PUBLIC_SUPPORT_CONTACT || '@SystemAriseSupport'
 
+/** Дата последнего обновления юридических документов. */
 export const LEGAL_UPDATED = '6 августа 2026'
 
+/** Цены и лимиты — держите в синхроне с bot/config.py. */
 export const PRICES = {
   premium: 149,
   premiumDays: 30,
