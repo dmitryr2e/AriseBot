@@ -246,6 +246,51 @@ async def increment_user(user_id: int, **deltas: int) -> None:
     await db().commit()
 
 
+async def increment_and_get(user_id: int, column: str, delta: int = 1) -> int:
+    """Инкремент одной колонки с возвратом НОВОГО значения — одним запросом.
+
+    Отдельные increment_user + get_user здесь не годятся: при двух
+    одновременных вербовках обе перечитывающие стороны могли увидеть уже
+    дважды увеличенный ref_count, и точное сравнение с порогом
+    (`== REF_PREMIUM_THRESHOLD`) не срабатывало ни у одной. RETURNING отдаёт
+    каждому вызову собственное значение, поэтому порог пересекается ровно раз.
+
+    Возвращает 0, если строки нет.
+    """
+    sqlsafe.require_user_columns([column])
+    cur = await db().execute(
+        f"UPDATE users SET {column} = {column} + ? WHERE user_id = ? RETURNING {column}",
+        (delta, user_id),
+    )
+    row = await cur.fetchone()
+    await db().commit()
+    return row[column] if row else 0
+
+
+async def claim_referral(new_user_id: int, referrer_id: int) -> bool:
+    """Атомарно закрепить вербовщика за новичком.
+
+    True — связь записана именно этим вызовом, бонусы нужно начислить.
+    False — вербовщик у новичка уже есть либо это попытка привести самого
+    себя.
+
+    Шаблон тот же, что у claim_winback: право занимается ДО начисления.
+    /start обрабатывается только для новых пользователей, но два быстрых
+    нажатия по одной ссылке успевали пройти проверку «пользователя нет»
+    одновременно (INSERT OR IGNORE молча гасил второй INSERT), и бонус
+    выдавался дважды обеим сторонам, а ref_count рос на 2 с одного новичка.
+    """
+    if referrer_id == new_user_id:
+        return False
+    cur = await db().execute(
+        "UPDATE users SET referred_by = ? "
+        "WHERE user_id = ? AND COALESCE(referred_by, 0) = 0",
+        (referrer_id, new_user_id),
+    )
+    await db().commit()
+    return cur.rowcount > 0
+
+
 async def compare_and_set_user(
     user_id: int,
     expect: dict,
