@@ -1,1 +1,1 @@
-# Solo Leveling System bot
+# ARISE — System bot
