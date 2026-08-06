@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot import config, db, game, keyboards, monitoring, render, share, texts, timeutil
+from bot.safehtml import display_name
 
 log = logging.getLogger(__name__)
 
@@ -207,8 +208,11 @@ async def weekly_report(bot: Bot) -> None:
     top_lines = ""
     if top:
         medals = ["🥇", "🥈", "🥉"]
+        # display_name, а не сырое поле: этот блок уходит КАЖДОМУ охотнику в
+        # базе, поэтому непроэкранированное имя из топа — самый широкий
+        # радиус поражения из всех мест, где мы подставляем чужие строки.
         rows = [
-            f"{medals[i]} {row['first_name'] or row['username'] or 'Охотник'} — {row['weekly_xp']} XP"
+            f"{medals[i]} {display_name(row)} — {row['weekly_xp']} XP"
             for i, row in enumerate(top)
         ]
         top_lines = "\n\n<b>Топ охотников недели:</b>\n" + "\n".join(rows)

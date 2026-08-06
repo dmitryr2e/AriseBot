@@ -9,6 +9,7 @@ from aiogram.types import Message
 
 from bot import ai, config, db, game, keyboards, texts
 from bot.handlers.helpers import load_user, notify_xp_events, process_day_events
+from bot.safehtml import esc
 
 router = Router()
 log = logging.getLogger(__name__)
@@ -149,8 +150,12 @@ async def report_received(message: Message, state: FSMContext) -> None:
 
     await db.increment_user(message.from_user.id, total_reports=1)
 
+    # Вердикт пишет модель по тексту пользователя, то есть это тоже
+    # недоверенная строка: в HTML она идёт только экранированной.
+    safe_verdict = esc(verdict)
+
     if xp <= 0:
-        await message.answer(texts.REPORT_ZERO.format(verdict=verdict))
+        await message.answer(texts.REPORT_ZERO.format(verdict=safe_verdict))
         return
 
     # Прямое распределение XP по указанным статам: +1 к каждому выбранному стату.
@@ -163,7 +168,7 @@ async def report_received(message: Message, state: FSMContext) -> None:
     stats_label = ", ".join(config.STAT_LABELS[s] for s in stats)
     await message.answer(
         texts.REPORT_RESULT.format(
-            verdict=verdict,
+            verdict=safe_verdict,
             xp=result.amount,
             stats=stats_label,
             progress=f"{result.xp} / {result.xp_needed}",

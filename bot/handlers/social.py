@@ -6,6 +6,7 @@ from aiogram.types import Message
 from bot import achievements as ach_mod
 from bot import config, db, keyboards, share, texts
 from bot.handlers.helpers import load_user, process_day_events
+from bot.safehtml import display_name
 
 router = Router()
 
@@ -25,7 +26,10 @@ async def cmd_rating(message: Message) -> None:
     medals = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
     lines = [texts.RATING_HEADER]
     for i, row in enumerate(top):
-        name = row["first_name"] or row["username"] or "Охотник"
+        # display_name, а не сырое поле: имя охотника видят все остальные, и
+        # без экранирования оно превращалось в разметку (ссылка-фишинг или
+        # битый тег, роняющий /rating всем сразу).
+        name = display_name(row)
         rank = config.rank_for_level(row["level"])
         lines.append(
             f"{medals[i]} <b>{name}</b> — {row['weekly_xp']} XP "

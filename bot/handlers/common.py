@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot import config, db, game, keyboards, texts, timeutil
 from bot.handlers.helpers import load_user, process_day_events
+from bot.safehtml import display_name, esc, user_name
 
 router = Router()
 
@@ -39,7 +40,9 @@ async def _process_referral(message: Message, new_user_id: int, referrer_id: int
     # Бонус новичку
     new_user = await db.get_user(new_user_id)
     await game.grant_xp(new_user, config.REF_BONUS_XP, count_quest=False)
-    ref_name = referrer["first_name"] or referrer["username"] or "Охотник"
+    # Имена в этих двух сообщениях — чужие: имя вербовщика видит новичок, имя
+    # новичка видит вербовщик. Оба идут в HTML, поэтому экранируем.
+    ref_name = display_name(referrer)
     await message.answer(
         texts.REF_WELCOME_BONUS.format(name=ref_name, bonus=config.REF_BONUS_XP)
     )
@@ -50,7 +53,7 @@ async def _process_referral(message: Message, new_user_id: int, referrer_id: int
     referrer = await db.get_user(referrer_id)
     ref_count = referrer["ref_count"]
     await game.grant_xp(referrer, config.REF_BONUS_XP, count_quest=False)
-    new_name = message.from_user.first_name or message.from_user.username or "Охотник"
+    new_name = user_name(message.from_user)
     try:
         await message.bot.send_message(
             referrer_id,
@@ -92,7 +95,7 @@ async def _send_first_quest(message: Message, user) -> None:
         ]
     )
     await message.answer(
-        texts.ONBOARDING_FIRST_QUEST.format(title=first["title"], xp=first["xp"]),
+        texts.ONBOARDING_FIRST_QUEST.format(title=esc(first["title"]), xp=first["xp"]),
         reply_markup=kb,
     )
 
@@ -143,7 +146,9 @@ async def cmd_profile(message: Message) -> None:
 
     rank = config.rank_for_level(user["level"])
     xp_needed = config.xp_to_next(user["level"])
-    name = user["first_name"] or user["username"] or "Охотник"
+    # Своё имя ломает разметку только себе, но 400 от Telegram делает /profile
+    # недоступным навсегда — экранируем так же, как чужие.
+    name = display_name(user)
     premium = " ⟨МОНАРХ⟩" if game.is_premium(user) else ""
     freezes = f"  |  Заморозки: {user['streak_freezes']}" if user["streak_freezes"] else ""
 

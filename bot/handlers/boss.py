@@ -6,6 +6,7 @@ from aiogram.types import Message
 from bot import boss as boss_mod
 from bot import config, db, texts
 from bot.handlers.helpers import load_user, process_day_events
+from bot.safehtml import display_name
 
 router = Router()
 
@@ -42,8 +43,9 @@ async def cmd_boss(message: Message) -> None:
         lines = [texts.BOSS_TOP_HEADER]
         medals = ["🥇", "🥈", "🥉", "4.", "5."]
         for i, row in enumerate(damagers):
-            name = row["first_name"] or row["username"] or "Охотник"
-            lines.append(f"{medals[i]} {name} — {row['damage']}")
+            # Чужие имена в общем топе — такой же источник разметки, как в
+            # /rating: экранируем на подстановке.
+            lines.append(f"{medals[i]} {display_name(row)} — {row['damage']}")
         text += "\n" + "\n".join(lines)
 
     await message.answer(text)

@@ -10,7 +10,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import BotCommand, TelegramObject, Update
 
-from bot import config, db, game, lock, monitoring, texts
+from bot import config, db, game, lock, monitoring, texts, throttling
 from bot.handlers import setup_routers
 from bot.scheduler import setup_scheduler
 
@@ -123,6 +123,10 @@ async def main() -> None:
         monitoring.setup(bot)
 
         dp = Dispatcher()
+        # Троттлинг — первым: отброшенный апдейт не должен доходить ни до
+        # ActivityMiddleware (а это запрос в БД на каждое нажатие), ни до
+        # хендлеров.
+        dp.update.outer_middleware(throttling.ThrottleMiddleware())
         dp.update.outer_middleware(ActivityMiddleware())
         dp.include_router(setup_routers())
 
