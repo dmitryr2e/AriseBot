@@ -17,6 +17,4 @@ USER appuser
 ENV BOT_DATA_DIR=/app/data \
     PYTHONUNBUFFERED=1
 
-VOLUME ["/app/data"]
-
 CMD ["python", "-m", "bot.main"]
