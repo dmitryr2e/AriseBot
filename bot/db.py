@@ -3,7 +3,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from bot import ai, config
+from bot import ai, config, sqlsafe
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -217,6 +217,9 @@ async def create_user(user_id: int, username: str, first_name: str) -> None:
 async def update_user(user_id: int, **fields) -> None:
     if not fields:
         return
+    # Имена колонок уходят в запрос строкой — их нельзя забиндить параметром,
+    # поэтому единственная защита от инъекции здесь — allowlist (bot/sqlsafe.py).
+    sqlsafe.require_user_columns(fields)
     cols = ", ".join(f"{k} = ?" for k in fields)
     await db().execute(
         f"UPDATE users SET {cols} WHERE user_id = ?",
@@ -234,12 +237,58 @@ async def increment_user(user_id: int, **deltas: int) -> None:
     deltas = {k: v for k, v in deltas.items() if v}
     if not deltas:
         return
+    sqlsafe.require_user_columns(deltas)
     cols = ", ".join(f"{k} = {k} + ?" for k in deltas)
     await db().execute(
         f"UPDATE users SET {cols} WHERE user_id = ?",
         (*deltas.values(), user_id),
     )
     await db().commit()
+
+
+async def increment_and_get(user_id: int, column: str, delta: int = 1) -> int:
+    """Инкремент одной колонки с возвратом НОВОГО значения — одним запросом.
+
+    Отдельные increment_user + get_user здесь не годятся: при двух
+    одновременных вербовках обе перечитывающие стороны могли увидеть уже
+    дважды увеличенный ref_count, и точное сравнение с порогом
+    (`== REF_PREMIUM_THRESHOLD`) не срабатывало ни у одной. RETURNING отдаёт
+    каждому вызову собственное значение, поэтому порог пересекается ровно раз.
+
+    Возвращает 0, если строки нет.
+    """
+    sqlsafe.require_user_columns([column])
+    cur = await db().execute(
+        f"UPDATE users SET {column} = {column} + ? WHERE user_id = ? RETURNING {column}",
+        (delta, user_id),
+    )
+    row = await cur.fetchone()
+    await db().commit()
+    return row[column] if row else 0
+
+
+async def claim_referral(new_user_id: int, referrer_id: int) -> bool:
+    """Атомарно закрепить вербовщика за новичком.
+
+    True — связь записана именно этим вызовом, бонусы нужно начислить.
+    False — вербовщик у новичка уже есть либо это попытка привести самого
+    себя.
+
+    Шаблон тот же, что у claim_winback: право занимается ДО начисления.
+    /start обрабатывается только для новых пользователей, но два быстрых
+    нажатия по одной ссылке успевали пройти проверку «пользователя нет»
+    одновременно (INSERT OR IGNORE молча гасил второй INSERT), и бонус
+    выдавался дважды обеим сторонам, а ref_count рос на 2 с одного новичка.
+    """
+    if referrer_id == new_user_id:
+        return False
+    cur = await db().execute(
+        "UPDATE users SET referred_by = ? "
+        "WHERE user_id = ? AND COALESCE(referred_by, 0) = 0",
+        (referrer_id, new_user_id),
+    )
+    await db().commit()
+    return cur.rowcount > 0
 
 
 async def compare_and_set_user(
@@ -258,6 +307,9 @@ async def compare_and_set_user(
     остаток XP считаются циклом вычитания порогов), а соединение с SQLite
     одно на процесс, поэтому длинную транзакцию открыть нельзя.
     """
+    # В запрос строкой уходят и SET-, и WHERE-идентификаторы, поэтому
+    # проверяем все три словаря разом.
+    sqlsafe.require_user_columns({*expect, *(absolute or {}), *(increments or {})})
     sets: list[str] = []
     params: list = []
     for col, value in (absolute or {}).items():
@@ -484,6 +536,8 @@ async def delete_user_data(user_id: int) -> None:
 
 
 async def count_where(table: str, where: str = "1=1", params: tuple = ()) -> int:
+    # Имя таблицы подставляется в запрос строкой — сверяем с allowlist.
+    sqlsafe.require_table(table)
     cur = await db().execute(f"SELECT COUNT(*) AS c FROM {table} WHERE {where}", params)
     return (await cur.fetchone())["c"]
 

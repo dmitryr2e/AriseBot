@@ -9,6 +9,7 @@ from aiogram.types import InlineKeyboardMarkup
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from bot import config, db, game, keyboards, monitoring, render, share, texts, timeutil
+from bot.backup_crypto import encrypt_file
 from bot.safehtml import display_name
 
 log = logging.getLogger(__name__)
@@ -404,20 +405,43 @@ async def onboarding_chain(bot: Bot) -> None:
 
 
 async def backup_db() -> None:
-    """Корректный бэкап SQLite в WAL-режиме через VACUUM INTO + ретеншн."""
+    """Бэкап SQLite в WAL-режиме: VACUUM INTO -> шифрование -> ретеншн.
+
+    На диск ложится только зашифрованный артефакт: дамп содержит имена,
+    переписку отчётов и историю платежей, а каталог бэкапов живёт в том же
+    volume, что и база. Открытый файл существует ровно между VACUUM INTO и
+    encrypt_file и удаляется в любом исходе.
+
+    Без BACKUP_ENCRYPTION_KEY бэкап не делается вовсе — молча писать открытую
+    копию базы хуже, чем не иметь копии.
+    """
     from bot import db as db_mod
+
+    if not config.BACKUP_ENCRYPTION_KEY:
+        log.error("BACKUP_ENCRYPTION_KEY не задан — бэкап пропущен (открытые копии не пишем)")
+        return
 
     config.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(config.TZ).strftime("%Y%m%d_%H%M%S")
-    dest = config.BACKUP_DIR / f"hunter_{stamp}.db"
+    plain = config.BACKUP_DIR / f"hunter_{stamp}.db"
+    dest = config.BACKUP_DIR / f"hunter_{stamp}.db.enc"
     try:
-        await db_mod.db().execute("VACUUM INTO ?", (str(dest),))
-        log.info("Бэкап БД создан: %s", dest)
+        await db_mod.db().execute("VACUUM INTO ?", (str(plain),))
     except Exception:  # noqa: BLE001
         log.exception("Ошибка создания бэкапа БД")
+        plain.unlink(missing_ok=True)
         return
+    try:
+        encrypt_file(plain, dest, config.BACKUP_ENCRYPTION_KEY)
+    except Exception:  # noqa: BLE001
+        log.exception("Ошибка шифрования бэкапа БД")
+        # Незашифрованный дамп на диске не оставляем ни при каком исходе.
+        plain.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
+        return
+    log.info("Бэкап БД создан: %s", dest)
     # Ретеншн: оставляем последние BACKUP_KEEP копий
-    backups = sorted(config.BACKUP_DIR.glob("hunter_*.db"))
+    backups = sorted(config.BACKUP_DIR.glob("hunter_*.db.enc"))
     for old in backups[: -config.BACKUP_KEEP]:
         try:
             old.unlink()
