@@ -95,9 +95,6 @@ async def ensure_today(user) -> DayEvents:
     async with _day_locks[user_id]:
         fresh = await db.get_user(user_id) or user
         events = await _ensure_today_locked(fresh)
-
-    # _ensure_today_locked уже записал дату и квесты. Бонус вехи выполняется
-    # после освобождения day-lock, чтобы grant_xp мог взять его без deadlock.
     if events.milestone:
         fresh = await db.get_user(user_id)
         if fresh is not None:
@@ -202,20 +199,14 @@ async def _ensure_today_locked(user) -> DayEvents:
         await db.insert_quests(rows)
         events.quests_issued = len(rows)
 
-    # Обычный rollover меняет HP на величину штрафа, поэтому прибавляем delta
-    # к актуальному HP в SQL, вместо записи устаревшего абсолютного значения.
-    # Так левелап/XP, случившиеся во время await выше, не затираются.
     if not died_now:
-        await db.update_rollover_state(
-            user["user_id"],
-            last_daily_date=today,
-            hp_delta=hp - initial_hp,
-            streak=streak,
-            best_streak=best_streak,
-            streak_freezes=freezes,
-            reports_today=0,
-            dying_until=dying_until,
+        await db.db().execute(
+            "UPDATE users SET last_daily_date = ?, hp = MAX(0, hp + ?), "
+            "streak = ?, best_streak = ?, streak_freezes = ?, "
+            "reports_today = 0, dying_until = ? WHERE user_id = ?",
+            (today, hp - initial_hp, streak, best_streak, freezes, dying_until, user["user_id"]),
         )
+        await db.db().commit()
     else:
         await db.update_user(
             user["user_id"], last_daily_date=today, hp=hp, streak=streak,
@@ -230,8 +221,6 @@ async def grant_xp(user, amount: int, count_quest: bool = True) -> XpResult:
     from bot import boss as boss_mod
     user_id = user["user_id"]
     result = XpResult()
-    # Единый порядок блокировок: сначала день, потом XP. Rollover больше не
-    # может записать старый XP/level поверх только что выданного начисления.
     async with _day_locks[user_id]:
         async with _xp_locks[user_id]:
             applied = await _apply_xp(user_id, amount, 1 if count_quest else 0, result)
