@@ -5,14 +5,13 @@ on:
     branches: [main]
   pull_request:
 
-# Токен воркфлоу только на чтение: CI ничего не пишет в репозиторий.
-permissions:
-  contents: read
-
 jobs:
   bot:
     name: Bot (lint + tests)
     runs-on: ubuntu-latest
+    # Даем этой джобе права на запись, чтобы пушить автоисправления ruff
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -26,8 +25,15 @@ jobs:
           pip install -r requirements.txt
           pip install ruff pytest pytest-asyncio
 
-      - name: Lint (ruff)
-        run: ruff check bot tests
+      # Добавлен флаг --fix для автоматического исправления импортов и стиля
+      - name: Lint and Fix (ruff)
+        run: ruff check bot tests --fix
+
+      # Если ruff внес изменения, этот шаг автоматически сделает коммит и запушит его
+      - name: Commit auto-fixes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: автоисправление импортов линтером Ruff [skip ci]"
 
       - name: Tests (pytest)
         run: pytest
@@ -46,6 +52,9 @@ jobs:
   landing:
     name: Landing (types + build)
     runs-on: ubuntu-latest
+    # Для лендинга оставляем безопасные права только на чтение
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
