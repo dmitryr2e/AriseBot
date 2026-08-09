@@ -65,9 +65,10 @@ class DayEvents:
 
 
 def is_premium(user) -> bool:
+    """Активен только премиум с неистёкшей датой окончания."""
     until = user["premium_until"] or ""
     if not until:
-        return bool(user["is_premium"])
+        return False
     return until >= datetime.now(config.TZ).strftime(PREMIUM_UNTIL_FMT)
 
 
