@@ -10,16 +10,10 @@ from aiogram import Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import Message
 
-from bot import config, db, game, texts
+from bot import config, db, game, texts, timeutil
 
 log = logging.getLogger(__name__)
 router = Router()
-
-# Возврат Stars состоит из удалённого вызова Telegram и последующей отметки в
-# SQLite. Без блокировки два одновременных /refund могли оба пройти проверку
-# refunded=0 и отправить два возврата по одному charge_id. Админские команды
-# обрабатываются одним процессом, поэтому asyncio.Lock закрывает гонку без
-# дополнительной инфраструктуры.
 _refund_lock = asyncio.Lock()
 
 
@@ -30,16 +24,27 @@ def _is_admin(message: Message) -> bool:
 @router.message(Command("admin"))
 async def cmd_admin(message: Message) -> None:
     if not _is_admin(message):
-        return  # молчим: не выдаём существование команды
+        return
 
     today = game.today_str()
-    week_ago = (datetime.now(config.TZ) - timedelta(days=7)).strftime("%Y-%m-%d")
+    week_ago = (datetime.now(config.TZ) - timedelta(days=7)).date()
+    users = await db.all_users()
+    total = len(users)
+    # SQLite datetime('now') хранится в UTC, поэтому date(created_at) в SQL
+    # ошибается для регистраций около полуночи по часовому поясу бота.
+    created_dates = {
+        user["user_id"]: timeutil.local_date_of(user["created_at"], config.TZ_NAME)
+        for user in users
+    }
+    new_today = sum(1 for value in created_dates.values() if value == today)
+    new_week = sum(
+        1
+        for value in created_dates.values()
+        if value and datetime.strptime(value, "%Y-%m-%d").date() >= week_ago
+    )
 
-    total = await db.count_where("users")
-    new_today = await db.count_where("users", "date(created_at) = ?", (today,))
-    new_week = await db.count_where("users", "date(created_at) >= ?", (week_ago,))
     dau = await db.count_where("users", "last_seen = ?", (today,))
-    wau = await db.count_where("users", "last_seen >= ?", (week_ago,))
+    wau = await db.count_where("users", "last_seen >= ?", (week_ago.strftime("%Y-%m-%d"),))
     premium = await db.count_where(
         "users", "premium_until >= ?", (datetime.now(config.TZ).strftime("%Y-%m-%d %H:%M:%S"),)
     )
@@ -56,23 +61,16 @@ async def cmd_admin(message: Message) -> None:
         if b
         else "ещё не создан"
     )
-
     lines = [
-        f"<b>{texts.SYS} // ПАНЕЛЬ НАБЛЮДАТЕЛЯ</b>",
-        "",
+        f"<b>{texts.SYS} // ПАНЕЛЬ НАБЛЮДАТЕЛЯ</b>", "",
         f"<b>Охотники:</b> {total}",
         f"— новых сегодня: {new_today}  |  за 7 дн: {new_week}",
-        f"— DAU: {dau}  |  WAU: {wau}",
-        f"— с премиумом: {premium}",
-        f"— пришли по рефералке: {refs_total}",
-        f"— умирали хоть раз: {dead}",
-        "",
-        "<b>Активность сегодня:</b>",
+        f"— DAU: {dau}  |  WAU: {wau}", f"— с премиумом: {premium}",
+        f"— пришли по рефералке: {refs_total}", f"— умирали хоть раз: {dead}",
+        "", "<b>Активность сегодня:</b>",
         f"— квестов выполнено: {quests_today}",
-        f"— ИИ-отчётов: {reports_today} (всего: {reports_total})",
-        "",
-        f"<b>Босс недели:</b> {boss_line}",
-        "",
+        f"— ИИ-отчётов: {reports_today} (всего: {reports_total})", "",
+        f"<b>Босс недели:</b> {boss_line}", "",
         "Рассылка: <code>/broadcast текст</code>",
         "Платежи: <code>/payments user_id</code> · Возврат: <code>/refund charge_id</code>",
     ]
@@ -81,13 +79,10 @@ async def cmd_admin(message: Message) -> None:
 
 @router.message(Command("payments"))
 async def cmd_payments(message: Message, command: CommandObject) -> None:
-    """История платежей пользователя: /payments <user_id>."""
     if not _is_admin(message):
         return
     if not command.args or not command.args.strip().isdigit():
-        await message.answer(
-            f"<b>{texts.SYS}</b>\n\nФормат: <code>/payments user_id</code>"
-        )
+        await message.answer(f"<b>{texts.SYS}</b>\n\nФормат: <code>/payments user_id</code>")
         return
     user_id = int(command.args.strip())
     rows = await db.user_payments(user_id)
@@ -97,24 +92,17 @@ async def cmd_payments(message: Message, command: CommandObject) -> None:
     lines = [f"<b>{texts.SYS} // ПЛАТЕЖИ {user_id}</b>", ""]
     for p in rows:
         status = " ⟨возврат⟩" if p["refunded"] else ""
-        lines.append(
-            f"— {p['created_at']} · {p['payload']} · {p['amount_stars']} ⭐{status}\n"
-            f"  <code>{p['charge_id']}</code>"
-        )
+        lines.append(f"— {p['created_at']} · {p['payload']} · {p['amount_stars']} ⭐{status}\n  <code>{p['charge_id']}</code>")
     await message.answer("\n".join(lines))
 
 
 @router.message(Command("refund"))
 async def cmd_refund(message: Message, command: CommandObject) -> None:
-    """Возврат Stars-платежа: /refund <charge_id>."""
     if not _is_admin(message):
         return
     if not command.args:
-        await message.answer(
-            f"<b>{texts.SYS}</b>\n\nФормат: <code>/refund charge_id</code>"
-        )
+        await message.answer(f"<b>{texts.SYS}</b>\n\nФормат: <code>/refund charge_id</code>")
         return
-
     async with _refund_lock:
         charge_id = command.args.strip()
         payment = await db.get_payment(charge_id)
@@ -124,20 +112,13 @@ async def cmd_refund(message: Message, command: CommandObject) -> None:
         if payment["refunded"]:
             await message.answer(f"<b>{texts.SYS}</b>\n\nЭтот платёж уже возвращён.")
             return
-
         try:
-            await message.bot.refund_star_payment(
-                user_id=payment["user_id"],
-                telegram_payment_charge_id=charge_id,
-            )
-        except Exception as e:  # noqa: BLE001
+            await message.bot.refund_star_payment(user_id=payment["user_id"], telegram_payment_charge_id=charge_id)
+        except Exception as e:
             log.exception("Ошибка возврата платежа %s", charge_id)
             await message.answer(f"<b>{texts.SYS}</b>\n\nОшибка возврата: <code>{e}</code>")
             return
-
         await db.mark_payment_refunded(charge_id)
-
-        # Откат товара, где это возможно
         user = await db.get_user(payment["user_id"])
         rollback_note = ""
         if user is not None:
@@ -145,24 +126,13 @@ async def cmd_refund(message: Message, command: CommandObject) -> None:
                 await db.update_user(payment["user_id"], premium_until="", is_premium=0)
                 rollback_note = " Премиум снят."
             elif payment["payload"] == "freeze" and user["streak_freezes"] > 0:
-                await db.update_user(
-                    payment["user_id"], streak_freezes=user["streak_freezes"] - 1
-                )
+                await db.update_user(payment["user_id"], streak_freezes=user["streak_freezes"] - 1)
                 rollback_note = " Заморозка списана."
-            # revive не откатываем: HP уже потрачено на игровой процесс
-
         try:
-            await message.bot.send_message(
-                payment["user_id"],
-                f"<b>{texts.SYS}</b>\n\nТвой платёж ({payment['amount_stars']} ⭐) возвращён.",
-            )
-        except Exception:  # noqa: BLE001
+            await message.bot.send_message(payment["user_id"], f"<b>{texts.SYS}</b>\n\nТвой платёж ({payment['amount_stars']} ⭐) возвращён.")
+        except Exception:
             pass
-
-        await message.answer(
-            f"<b>{texts.SYS}</b>\n\nВозврат выполнен: {payment['amount_stars']} ⭐ "
-            f"пользователю {payment['user_id']}.{rollback_note}"
-        )
+        await message.answer(f"<b>{texts.SYS}</b>\n\nВозврат выполнен: {payment['amount_stars']} ⭐ пользователю {payment['user_id']}.{rollback_note}")
 
 
 @router.message(Command("broadcast"))
@@ -170,12 +140,8 @@ async def cmd_broadcast(message: Message, command: CommandObject) -> None:
     if not _is_admin(message):
         return
     if not command.args:
-        await message.answer(
-            f"<b>{texts.SYS}</b>\n\nФормат: <code>/broadcast текст сообщения</code>\n"
-            "Текст уйдёт всем охотникам от имени Системы."
-        )
+        await message.answer(f"<b>{texts.SYS}</b>\n\nФормат: <code>/broadcast текст сообщения</code>\nТекст уйдёт всем охотникам от имени Системы.")
         return
-
     text = f"<b>{texts.SYS} // ОБЪЯВЛЕНИЕ</b>\n\n{command.args}"
     users = await db.all_users()
     sent = failed = 0
@@ -185,7 +151,5 @@ async def cmd_broadcast(message: Message, command: CommandObject) -> None:
             sent += 1
         except Exception:
             failed += 1
-        await asyncio.sleep(0.05)  # ~20 msg/sec, лимит Telegram — 30
-    await message.answer(
-        f"<b>{texts.SYS}</b>\n\nРассылка завершена. Доставлено: {sent}, недоступно: {failed}."
-    )
+        await asyncio.sleep(0.05)
+    await message.answer(f"<b>{texts.SYS}</b>\n\nРассылка завершена. Доставлено: {sent}, недоступно: {failed}.")
