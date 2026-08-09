@@ -11,11 +11,7 @@ router = Router()
 
 
 def _callback_id(data: str) -> int | None:
-    """id из callback_data вида 'done:123'. None — данные подделаны или битые.
-
-    callback_data приходит от клиента и подделывается элементарно, а голый
-    int() ронял хендлер в глобальный обработчик ошибок.
-    """
+    """id из callback_data вида 'done:123'. None — данные подделаны или битые."""
     try:
         return int(data.split(":", 1)[1])
     except (IndexError, ValueError):
@@ -29,16 +25,9 @@ def _quests_view(quests) -> tuple[str, InlineKeyboardMarkup | None]:
     for q in quests:
         mark = "✅" if q["done"] else "◻"
         tag = " ⟨личный⟩" if q["is_custom"] else ""
-        # Заголовок личного квеста пишет сам пользователь — в HTML он идёт
-        # только экранированным. В тексте кнопки разметки нет, там сырой.
-        lines.append(
-            f"{mark} <b>{esc(q['title'])}</b>{tag}\n"
-            f"     [{config.STAT_LABELS[q['stat']]}] +{q['xp']} XP"
-        )
+        lines.append(f"{mark} <b>{esc(q['title'])}</b>{tag}\n     [{config.STAT_LABELS[q['stat']]}] +{q['xp']} XP")
         if not q["done"]:
-            buttons.append(
-                [InlineKeyboardButton(text=f"Исполнить: {q['title'][:32]}", callback_data=f"done:{q['id']}")]
-            )
+            buttons.append([InlineKeyboardButton(text=f"Исполнить: {q['title'][:32]}", callback_data=f"done:{q['id']}")])
     if done_count == len(quests):
         lines.append("\nВсе квесты исполнены. Система наблюдает за твоим отдыхом.")
     else:
@@ -72,7 +61,6 @@ async def cb_first_quest_done(callback: CallbackQuery) -> None:
     if quest["done"]:
         await callback.answer("Уже исполнено.")
         return
-    # Строка охотника нужна до проверки срока: «сегодня» считается в его поясе.
     user = await db.get_user(callback.from_user.id)
     if user is None:
         await callback.answer("Профиль не найден. Отправь /start.", show_alert=True)
@@ -80,21 +68,12 @@ async def cb_first_quest_done(callback: CallbackQuery) -> None:
     if quest["quest_date"] != game.today_str(user):
         await callback.answer("Срок исполнения истёк.", show_alert=True)
         return
-
     if not await db.mark_quest_done(quest_id):
         await callback.answer("Уже исполнено.")
         return
     result = await game.grant_xp(user, quest["xp"])
-
     progress = f"Опыт: {result.xp} / {result.xp_needed}"
-    await callback.message.answer(
-        texts.QUEST_DONE.format(
-            title=esc(quest["title"]),
-            xp=result.amount,
-            stat=config.STAT_LABELS[quest["stat"]],
-            progress=progress,
-        )
-    )
+    await callback.message.answer(texts.QUEST_DONE.format(title=esc(quest["title"]), xp=result.amount, stat=config.STAT_LABELS[quest["stat"]], progress=progress))
     await notify_xp_events(callback.message, result, user_id=callback.from_user.id)
     await callback.message.answer(texts.ONBOARDING_FIRST_DONE)
     try:
@@ -117,7 +96,6 @@ async def cb_quest_done(callback: CallbackQuery) -> None:
     if quest["done"]:
         await callback.answer("Уже исполнено. Система не начисляет опыт дважды.")
         return
-    # Строка охотника нужна до проверки срока: «сегодня» считается в его поясе.
     user = await db.get_user(callback.from_user.id)
     if user is None:
         await callback.answer("Профиль не найден. Отправь /start.", show_alert=True)
@@ -125,31 +103,22 @@ async def cb_quest_done(callback: CallbackQuery) -> None:
     if quest["quest_date"] != game.today_str(user):
         await callback.answer("Срок исполнения истёк. Система не принимает просрочку.", show_alert=True)
         return
-
     if not await db.mark_quest_done(quest_id):
         await callback.answer("Уже исполнено. Система не начисляет опыт дважды.")
         return
     result = await game.grant_xp(user, quest["xp"])
-
     progress = f"Опыт: {result.xp} / {result.xp_needed}"
-    await callback.message.answer(
-        texts.QUEST_DONE.format(
-            title=esc(quest["title"]),
-            xp=result.amount,
-            stat=config.STAT_LABELS[quest["stat"]],
-            progress=progress,
-        )
-    )
+    await callback.message.answer(texts.QUEST_DONE.format(title=esc(quest["title"]), xp=result.amount, stat=config.STAT_LABELS[quest["stat"]], progress=progress))
     await notify_xp_events(callback.message, result, user_id=callback.from_user.id)
-
-    # Обновляем список квестов
     quests = await db.quests_for_date(callback.from_user.id, game.today_str(user))
     if all(q["done"] for q in quests):
         user = await db.get_user(callback.from_user.id)
-        await callback.message.answer(texts.ALL_QUESTS_DONE.format(streak=user["streak"] + 1))
+        # Серия закрывается только при следующем rollover, поэтому +1 здесь
+        # обещал значение, которого ещё нет в профиле.
+        await callback.message.answer(texts.ALL_QUESTS_DONE.format(streak=user["streak"]))
     text, kb = _quests_view(quests)
     try:
         await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
-        pass  # текст мог не измениться
+        pass
     await callback.answer("Исполнено.")
