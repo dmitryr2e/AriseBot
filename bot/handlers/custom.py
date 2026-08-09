@@ -42,8 +42,6 @@ async def cmd_addquest(message: Message, command: CommandObject, state: FSMConte
     limit = _limit_for(user)
     existing = await db.custom_quests(user["user_id"])
     if len(existing) >= limit:
-        # Монарх уже на расширенном лимите: ему показываем другой текст и
-        # не предлагаем купить то, что у него есть.
         if game.is_premium(user):
             await message.answer(texts.ADDQUEST_LIMIT_PREMIUM.format(limit=limit))
         else:
@@ -54,8 +52,6 @@ async def cmd_addquest(message: Message, command: CommandObject, state: FSMConte
         return
 
     await state.set_state(AddQuestFlow.waiting_stat)
-    # В FSM кладём сырой заголовок (в БД он тоже хранится как есть),
-    # экранируем только на выводе в HTML.
     await state.update_data(title=title)
     await message.answer(
         texts.ADDQUEST_PICK_STAT.format(title=esc(title)), reply_markup=_stat_keyboard()
@@ -71,8 +67,6 @@ async def cb_pick_stat(callback: CallbackQuery, state: FSMContext) -> None:
         await callback.answer(texts.ADDQUEST_EXPIRED, show_alert=True)
         return
 
-    # Лимит перепроверяется: пока выбирали стат, квесты могли добавиться
-    # с другого устройства, а премиум — истечь.
     user = await db.get_user(callback.from_user.id)
     if user is None:
         await state.clear()
@@ -86,7 +80,6 @@ async def cb_pick_stat(callback: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
     await db.add_custom_quest(callback.from_user.id, title, stat)
-    # Сразу добавляем квест в сегодняшний день, если день уже выдан
     today = game.today_str(user)
     if user["last_daily_date"] == today:
         await db.insert_quests(
@@ -101,11 +94,6 @@ async def cb_pick_stat(callback: CallbackQuery, state: FSMContext) -> None:
 
 @router.callback_query(F.data.startswith("cqstat:"))
 async def cb_pick_stat_stale(callback: CallbackQuery) -> None:
-    """Кнопка выбора стата нажата вне протокола: бот перезапущен или выбор уже сделан.
-
-    Без этого хендлера callback остался бы без ответа и у пользователя навсегда
-    крутился бы индикатор загрузки на кнопке.
-    """
     await callback.answer(texts.ADDQUEST_EXPIRED, show_alert=True)
 
 
@@ -137,10 +125,39 @@ async def cb_delete_custom(callback: CallbackQuery) -> None:
     try:
         cq_id = int(callback.data.split(":", 1)[1])
     except (IndexError, ValueError):
-        # callback_data подделывается тривиально: битое значение — не повод
-        # ронять хендлер в глобальный обработчик ошибок.
         await callback.answer("Квест не найден в реестре.", show_alert=True)
         return
-    await db.delete_custom_quest(callback.from_user.id, cq_id)
+
+    conn = db.db()
+    # Удаляем запись и её сегодняшнюю незавершённую копию одной транзакцией.
+    # Связи custom_quests -> quests в схеме нет, поэтому сначала читаем пару
+    # title/stat и удаляем только точное совпадение текущего дня.
+    try:
+        await conn.execute("BEGIN")
+        cur = await conn.execute(
+            "SELECT title, stat FROM custom_quests WHERE id = ? AND user_id = ?",
+            (cq_id, callback.from_user.id),
+        )
+        custom = await cur.fetchone()
+        if custom is None:
+            await conn.rollback()
+            await callback.answer("Квест не найден в реестре.", show_alert=True)
+            return
+        user = await db.get_user(callback.from_user.id)
+        today = game.today_str(user) if user is not None else ""
+        await conn.execute(
+            "DELETE FROM quests WHERE user_id = ? AND quest_date = ? "
+            "AND is_custom = 1 AND done = 0 AND title = ? AND stat = ?",
+            (callback.from_user.id, today, custom["title"], custom["stat"]),
+        )
+        await conn.execute(
+            "DELETE FROM custom_quests WHERE id = ? AND user_id = ?",
+            (cq_id, callback.from_user.id),
+        )
+        await conn.commit()
+    except Exception:
+        await conn.rollback()
+        raise
+
     await callback.message.answer(texts.CUSTOM_DELETED)
     await callback.answer("Удалено.")
