@@ -3,6 +3,7 @@ import asyncio
 import logging
 import sys
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram import BaseMiddleware, Bot, Dispatcher
@@ -38,9 +39,23 @@ class ActivityMiddleware(BaseMiddleware):
             user = await db.get_user(tg_user.id)
 
             if user is not None:
-                # Атомарно забираем право на бонус.
-                # Только один из параллельных апдейтов получит True.
-                if await db.claim_winback(tg_user.id):
+                # winback_sent означает, что сообщение о возвращении уже было
+                # подготовлено для этого эпизода отсутствия. Бонус можно
+                # забрать только если пользователь действительно отсутствовал
+                # не меньше WINBACK_AFTER_DAYS: обычная активность больше не
+                # превращается в ежедневную раздачу XP.
+                cutoff = (
+                    datetime.now(config.TZ).date()
+                    - timedelta(days=config.WINBACK_AFTER_DAYS)
+                ).strftime("%Y-%m-%d")
+                cur = await db.db().execute(
+                    "UPDATE users SET winback_sent = 0 "
+                    "WHERE user_id = ? AND winback_sent = 1 "
+                    "AND last_seen != '' AND last_seen <= ?",
+                    (tg_user.id, cutoff),
+                )
+                await db.db().commit()
+                if cur.rowcount > 0:
                     await game.grant_xp(
                         user,
                         config.WINBACK_BONUS_XP,
