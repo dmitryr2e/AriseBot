@@ -52,7 +52,7 @@ UPSELL_REVIVE = "revive"
 UPSELL_FREEZE = "freeze"
 
 _UPSELL_BUTTONS: dict[str, tuple[str, str, int]] = {
-    UPSELL_PREMIUM: ("👑 Статус «Монарх»", "premium30", config.PREMIUM_PRICE_STARS),
+    UPSELL_PREMIUM: ("👑 Статус «Восходящий»", "premium30", config.PREMIUM_PRICE_STARS),
     UPSELL_REVIVE: ("💀 Воскрешение", "revive", config.REVIVE_PRICE_STARS),
     UPSELL_FREEZE: ("🧊 Заморозка серии", "freeze", config.FREEZE_PRICE_STARS),
 }
