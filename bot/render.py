@@ -1,21 +1,3 @@
-"""Единый рендер системных сообщений.
-
-Хендлеры и планировщик обязаны использовать эти функции, а не собирать
-тексты самостоятельно: иначе сообщения расходятся. Так, в rollover
-планировщика отсутствовал STREAK_FROZEN — охотник тратил заряд заморозки
-и не получал об этом ни одного уведомления.
-
-Функции возвращают список готовых строк — отправкой занимается вызывающий
-код (у хендлеров это `message.answer`, у шедулера — троттлящий `_safe_send`).
-
-Апселл: `render_day_messages` отдаёт пары (текст, ключ оффера). Ключ — строка
-из `config.UPSELL_*`, а не готовая клавиатура: модуль обязан остаться чистым
-и не зависеть от aiogram. Клавиатуру по ключу собирает `keyboards.upsell()`.
-
-Вирусность: у сообщений о вехе серии и повышении ранга заполнено поле `share`
-— готовый текст для кнопки «Поделиться». Здесь тот же принцип: рендер отдаёт
-только текст, кнопку по нему собирает `keyboards.share_button()`.
-"""
 from typing import NamedTuple
 
 from bot import config, game, share, texts
@@ -30,11 +12,7 @@ class Msg(NamedTuple):
 
 
 def render_day_events(events: game.DayEvents) -> list[str]:
-    """Только тексты сообщений о смене дня — без апселл-офферов.
-
-    Оставлена для кода, которому клавиатуры не нужны. Логика живёт в
-    `render_day_messages`, дублирования нет.
-    """
+    """Только тексты сообщений о смене дня — без апселл-офферов."""
     return [msg.text for msg in render_day_messages(events)]
 
 
@@ -47,6 +25,11 @@ def render_day_messages(events: game.DayEvents) -> list[Msg]:
     # HP на момент штрафа: при смерти показываем 0, а не восстановленное значение
     hp_after_penalty = 0 if events.died else max(0, events.hp)
 
+    # Урон за невыполненные квесты и урон за дни полного отсутствия имеют
+    # разные причины. Не показываем в первом сообщении сумму, в которую уже
+    # добавлен absence damage: иначе пользователь видит завышенный штраф.
+    missed_damage = events.missed * config.HP_PENALTY_PER_MISS
+
     # Заморозку предлагаем только тому, у кого её нет: у охотника с зарядами
     # сгорела серия по другой причине, и кнопка «купи заморозку» выглядела бы
     # издевательством.
@@ -57,7 +40,7 @@ def render_day_messages(events: game.DayEvents) -> list[Msg]:
             Msg(
                 texts.HP_LOSS.format(
                     missed=events.missed,
-                    damage=events.damage,
+                    damage=missed_damage,
                     hp=hp_after_penalty,
                     max_hp=events.max_hp,
                 ),
@@ -119,8 +102,6 @@ def render_day_messages(events: game.DayEvents) -> list[Msg]:
                 texts.STREAK_MILESTONE.format(
                     streak=streak, bonus=bonus_xp, freeze_line=freeze_line
                 ),
-                # Веха — момент гордости, а не боли: здесь просят поделиться,
-                # а не покупать. Поэтому апселл к ней сознательно не цепляем.
                 share=share.milestone_text(streak),
             )
         )
@@ -133,25 +114,12 @@ def render_day_messages(events: game.DayEvents) -> list[Msg]:
 
 
 def render_xp_result(result: game.XpResult | None) -> list[str]:
-    """Только тексты сообщений о левелапах и рангах — без share-кнопок.
-
-    Оставлена для кода, которому клавиатуры не нужны. Логика живёт в
-    `render_xp_messages`, дублирования нет.
-    """
+    """Только тексты сообщений о левелапах и рангах — без share-кнопок."""
     return [msg.text for msg in render_xp_messages(result)]
 
 
 def render_xp_messages(result: game.XpResult | None) -> list[Msg]:
-    """Сообщения о левелапах и повышении ранга.
-
-    Убийство босса и достижения здесь не рендерятся: они требуют запросов
-    в БД и обрабатываются в `handlers.helpers.notify_xp_events`.
-
-    Ранг-ап получает share-текст, левелап — нет: уровни растут каждые
-    несколько дней, и кнопка «поделиться» на каждом превратилась бы в шум.
-    Ранг меняется шесть раз за всю игру — это и есть событие, о котором
-    рассказывают.
-    """
+    """Сообщения о левелапах и повышении ранга."""
     if result is None:
         return []
     messages = [
