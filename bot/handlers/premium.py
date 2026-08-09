@@ -1,7 +1,14 @@
 """Хендлер: /premium — статус «Монарх» и разовые покупки через Telegram Stars (XTR)."""
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Message, PreCheckoutQuery
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    LabeledPrice,
+    Message,
+    PreCheckoutQuery,
+)
 
 from bot import config, db, game, texts
 from bot.handlers.helpers import load_user
