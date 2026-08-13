@@ -6,4 +6,4 @@ APScheduler>=3.11.3,<4
 Pillow>=12.3.0,<13
 httpx>=0.28.1,<1
 qrcode[pil]>=7.4,<9
-cryptography>=42,<47
+cryptography>=50.0.0,<51
