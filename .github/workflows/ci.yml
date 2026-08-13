@@ -31,7 +31,7 @@ jobs:
 
       # Если ruff внес изменения, этот шаг автоматически сделает коммит и запушит его
       - name: Commit auto-fixes
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "style: автоисправление импортов линтером Ruff [skip ci]"
 
